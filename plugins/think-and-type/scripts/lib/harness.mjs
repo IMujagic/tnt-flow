@@ -262,7 +262,7 @@ const EVALUATORS = {
     const p = lockedIssues(root, state);
     if (p.length) return p;
     const contents = Object.keys(state.locked.files).map((file) => fs.readFileSync(path.join(root, file), 'utf8')).join('\n');
-    for (const ac of spec.acs) if (!acRegex(ac.id).test(contents)) p.push(`${ac.id} is not referenced by any locked test (name tests after their AC, e.g. "${ac.id}: ...")`);
+    for (const ac of spec.acs) if (!acRegex(ac.id).test(contents)) p.push(`${ac.id} is not referenced by any locked test (name tests after their AC: "${ac.id}: ...", or test_ac_${ac.id.slice(3)}_..., TestAC${ac.id.slice(3)}..., ac${ac.id.slice(3)}_... where names can't contain "-")`);
     const run = latest(ledger, (e) => e.type === 'run' && e.feature === f.id && e.step === 'red' && e.seq > state.locked.seq);
     p.push(...runIssues(run, tree, 'red (after the latest lock-tests)'));
     if (run) {

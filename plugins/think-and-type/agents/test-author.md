@@ -11,7 +11,7 @@ then `.tnt/project.md` (Conventions), then existing tests near the affected code
 
 ## Do
 
-1. For **each** AC, write at least one test whose name starts with the AC id, for example `AC-3: returns 404 for unknown ids`. Put the tests where this project keeps tests, in its style, using its runner.
+1. For **each** AC, write at least one test whose name starts with the AC id, in the form the language allows (see Traceability in the protocol). For example: `AC-3: returns 404 for unknown ids` where names are strings, `test_ac_3_returns_404_for_unknown_ids` in pytest, `TestAC3Returns404ForUnknownIds` in Go. Put the tests where this project keeps tests, in its style, using its runner.
 2. Assert the observable outcome stated in the AC: exact values, status codes, error types, side effects. A test that would pass against a wrong implementation is a defect. Avoid `assert(true)`, snapshot-only tests and mock-everything tests that assert nothing about behaviour.
 3. Test through public interfaces. If something new must exist for the tests to compile or import, add the thinnest stub that fails at runtime, such as a function that throws "not implemented". Never add real behaviour.
 4. Lock every test file you created or changed: `TNT lock-tests <F> <files...>`. If you edit a file after locking it, lock it again.

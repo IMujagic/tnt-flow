@@ -266,7 +266,16 @@ export function parseAcceptanceCriteria(text) {
   return acs;
 }
 
-export const acRegex = (id) => new RegExp(`${id}(?!\\d)`);
+// Finds an acceptance-criterion id in any naming style a test framework allows,
+// since many languages can't put "-" in a test name: "AC-1", "AC 1", "AC1",
+// "test_ac_1_x" (pytest), "TestAC1X" (Go), "ac1_x" (Rust), "givenAc1X" (camelCase).
+// It must not follow an uppercase letter or digit, so "MAC1" and "HVAC1" miss, and it
+// must not be followed by a digit, so "AC-1" never matches "AC-10".
+export function acRegex(id) {
+  const n = /^AC-(\d+)$/i.exec(id)?.[1];
+  if (!n) return new RegExp(`${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`);
+  return new RegExp(`(?<![A-Z0-9])[Aa][Cc][-_ ]?${n}(?!\\d)`);
+}
 
 export function fileSha(root, rel) {
   const abs = path.join(root, rel);

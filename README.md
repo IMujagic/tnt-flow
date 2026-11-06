@@ -23,7 +23,7 @@ plan ──▶ spec (human approves)
 | Gate | Passes only when the ledger shows… |
 |---|---|
 | spec | a human approved the exact `spec.md` content (hash recorded); every AC is concrete |
-| red | test files are locked (hashed), every `AC-n` is referenced by a test, and the **configured full suite failed** on the current tree with an AC id in the output |
+| red | test files are locked (hashed), every `AC-n` is referenced by a test name (`AC-1`, `test_ac_1_…`, `TestAC1…`, whatever the language allows), and the **configured full suite failed** on the current tree with an AC id in the output |
 | green | the full suite passed after red, the locked tests are byte-identical, and the code differs from the red tree (otherwise the suite is flaky) |
 | style | every configured lint, format-check and typecheck command exited 0 on the green tree |
 | review | an independent review approved the green tree; every finding quotes real code at file:line and every changed file was reviewed |

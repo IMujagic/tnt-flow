@@ -55,8 +55,18 @@ work around it. The orchestrator owns routing.
 ## 4. Traceability
 
 - Acceptance criteria have IDs (`AC-1`, `AC-2`, ...) in `spec.md`.
-- Every AC is covered by at least one test whose name contains its ID, for example
-  `test("AC-2: rejects expired tokens")`.
+- Every AC is covered by at least one test whose **name** contains its ID. The name has
+  to show up in the runner's failure output, which is why a comment is not enough.
+  Use the form the language allows:
+
+  | Test names are… | Example for AC-2 |
+  |---|---|
+  | strings (JS/TS, JUnit `@DisplayName`, RSpec, xUnit `DisplayName`) | `test("AC-2: rejects expired tokens")` |
+  | snake_case identifiers (pytest, Rust) | `test_ac_2_rejects_expired_tokens`, `ac2_rejects_expired_tokens` |
+  | PascalCase or camelCase identifiers (Go, Java and C# methods) | `TestAC2RejectsExpiredTokens`, `ac2RejectsExpiredTokens` |
+
+  The harness accepts `AC-2`, `AC 2`, `AC2`, `ac_2` and `ac2` in any letter case. It never
+  confuses `AC-2` with `AC-20`.
 - Functional evidence is recorded per AC with `--ac AC-n`.
 
 ## 5. Evidence hygiene
