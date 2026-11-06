@@ -1,11 +1,11 @@
 {
-  "name": "agentic-wf-dev",
+  "name": "think-and-type-dev",
   "private": true,
   "type": "module",
-  "description": "Development workspace for the agentic-wf Claude Code plugin",
+  "description": "Development workspace for the think-and-type Claude Code plugin",
   "engines": { "node": ">=18" },
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
-    "validate": "claude plugin validate plugins/agentic-wf && claude plugin validate ."
+    "validate": "claude plugin validate plugins/think-and-type && claude plugin validate ."
   }
 }

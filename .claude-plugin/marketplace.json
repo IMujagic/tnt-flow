@@ -1,11 +1,11 @@
 {
-  "name": "agentic-wf-marketplace",
+  "name": "think-and-type",
   "owner": { "name": "Ismar Mujagic" },
-  "metadata": { "description": "Local marketplace for developing and installing the agentic-wf plugin" },
+  "metadata": { "description": "Local marketplace for developing and installing the think-and-type plugin" },
   "plugins": [
     {
-      "name": "agentic-wf",
-      "source": "./plugins/agentic-wf",
+      "name": "tnt",
+      "source": "./plugins/think-and-type",
       "description": "Evidence-gated, subagent-per-step development workflow for greenfield and existing projects"
     }
   ]

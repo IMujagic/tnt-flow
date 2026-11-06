@@ -1,4 +1,4 @@
-# agentic-wf
+# Think and Type (`tnt`)
 
 A Claude Code plugin that runs an **evidence-gated development workflow**. You plan
 features as testable specs. Each feature is then built through a pipeline in which
@@ -28,45 +28,50 @@ plan ──▶ spec (human approves)
 | style | every configured lint, format-check and typecheck command exited 0 on the green tree |
 | review | an independent review approved the green tree; every finding quotes real code at file:line and every changed file was reviewed |
 | functional | each AC has a black-box run on the green tree whose output matched an `--expect` pattern |
-| audit | `wf verify` re-executed the tests, style checks and functional runs from scratch, the hash chain is intact, and a fresh auditor's report passed |
+| audit | `tnt verify` re-executed the tests, style checks and functional runs from scratch, the hash chain is intact, and a fresh auditor's report passed |
 
 Mechanisms behind this:
-- **Hash-chained ledger** (`.agentic-wf/ledger.jsonl`): every run, gate, approval and submission is chained by sha256. Editing an entry or a log is detected.
+- **Hash-chained ledger** (`.tnt/ledger.jsonl`): every run, gate, approval and submission is chained by sha256. Editing an entry or a log is detected.
 - **Tree binding**: evidence records a content hash of the working tree, built with a temporary git index. Changing code after green invalidates every later gate.
 - **The CLI chooses commands**: red, green and style always run the configured commands, so a step cannot "prove" its work with `true`.
 - **Guard hook**: blocks direct writes to evidence and state, blocks edits to locked tests after red, and keeps verifier subagents read-only.
-- **Git history**: with `git.autoCommit`, the `[wf:red]` commit (failing tests) lands before `[wf:green]`.
+- **Git history**: with `git.autoCommit`, the `[tnt:red]` commit (failing tests) lands before `[tnt:green]`.
 
 ## Install
 
 Requirements: a recent Claude Code (check that `claude --version` is current; run
 `claude update` if it is not), Node.js 18 or later, and git.
 
+From the root of this repository:
+
 ```bash
-claude plugin marketplace add C:/Projects/AI/agentic-wf
+claude plugin marketplace add .
 ```
 
 ```bash
-claude plugin install agentic-wf@agentic-wf-marketplace
+claude plugin install tnt@think-and-type
 ```
 
-To work on the plugin without installing it, run `claude --plugin-dir plugins/agentic-wf`.
+The marketplace is named `think-and-type`. The plugin id is `tnt`, so its commands
+are `/tnt:<skill>` and its agents are `tnt:<agent>`.
+
+To work on the plugin without installing it, run `claude --plugin-dir plugins/think-and-type`.
 
 ## Use
 
 | Command | When |
 |---|---|
-| `/agentic-wf:onboard` | Adopt the workflow in an existing repo: analyse it, prove its commands, record a baseline |
-| `/agentic-wf:new-project <idea>` | Greenfield: brief, architect design, scaffold a proven toolchain, seed a backlog |
-| `/agentic-wf:plan <request>` | Slice a request into features with AC-based specs; you approve each one |
-| `/agentic-wf:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
-| `/agentic-wf:status [F-xxx]` | Gates, attempts, waivers, ledger integrity |
-| `/agentic-wf:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge |
+| `/tnt:onboard` | Adopt the workflow in an existing repo: analyse it, prove its commands, record a baseline |
+| `/tnt:new-project <idea>` | Greenfield: brief, architect design, scaffold a proven toolchain, seed a backlog |
+| `/tnt:plan <request>` | Slice a request into features with AC-based specs; you approve each one |
+| `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
+| `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity |
+| `/tnt:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge |
 
-Each project gets a `.agentic-wf/` directory. Commit it, because it is the audit trail:
+Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 
 ```
-.agentic-wf/
+.tnt/
   config.json          commands the gates run, git and limit settings
   project.md           architecture, conventions, functional-test approach
   ledger.jsonl         hash-chained evidence ledger (CLI-only)
@@ -77,13 +82,13 @@ Each project gets a `.agentic-wf/` directory. Commit it, because it is the audit
     report.md          generated evidence report
 ```
 
-### Configuration (`.agentic-wf/config.json`)
+### Configuration (`.tnt/config.json`)
 
 ```json
 {
   "commands": { "test": "npm test", "lint": "npm run lint", "format_check": "npx prettier --check .", "typecheck": "npx tsc --noEmit", "build": null },
   "style": ["lint", "format_check", "typecheck"],
-  "git": { "autoCommit": true, "branchPerFeature": true, "branchPrefix": "wf/" },
+  "git": { "autoCommit": true, "branchPerFeature": true, "branchPrefix": "tnt/" },
   "red": { "requireAcInOutput": true },
   "limits": { "maxIterations": 3 },
   "timeouts": { "commandMs": 900000 },
@@ -96,15 +101,15 @@ elsewhere. Set `shell` to override this.
 
 ## Escape hatches
 
-- `wf unlock <F> --reason …` reopens locked tests. It resets red and every later gate, and the new or changed tests must fail again before implementation continues.
-- `wf waive <F> <gate> --reason … --by <human>` records a human decision to skip a gate. Waivers are permanent in the ledger and flagged in reports.
+- `tnt unlock <F> --reason …` reopens locked tests. It resets red and every later gate, and the new or changed tests must fail again before implementation continues.
+- `tnt waive <F> <gate> --reason … --by <human>` records a human decision to skip a gate. Waivers are permanent in the ledger and flagged in reports.
 
 ## Limits
 
 The harness makes faking evidence hard and easy to detect, but not impossible. An
 agent with shell access could, in principle, rewrite the whole ledger chain. The
-defences are the guard hook, the git history, and `wf verify` re-execution, which
-does not trust recorded results. Treat `report.md` together with `wf verify` as the
+defences are the guard hook, the git history, and `tnt verify` re-execution, which
+does not trust recorded results. Treat `report.md` together with `tnt verify` as the
 proof, not either one alone.
 
 ## Developing this plugin
