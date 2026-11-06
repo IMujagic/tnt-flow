@@ -1,0 +1,12 @@
+{
+  "name": "agentic-wf-marketplace",
+  "owner": { "name": "Ismar Mujagic" },
+  "metadata": { "description": "Local marketplace for developing and installing the agentic-wf plugin" },
+  "plugins": [
+    {
+      "name": "agentic-wf",
+      "source": "./plugins/agentic-wf",
+      "description": "Evidence-gated, subagent-per-step development workflow for greenfield and existing projects"
+    }
+  ]
+}

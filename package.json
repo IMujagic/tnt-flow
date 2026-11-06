@@ -1,0 +1,11 @@
+{
+  "name": "agentic-wf-dev",
+  "private": true,
+  "type": "module",
+  "description": "Development workspace for the agentic-wf Claude Code plugin",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "validate": "claude plugin validate plugins/agentic-wf && claude plugin validate ."
+  }
+}
