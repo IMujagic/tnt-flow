@@ -67,6 +67,7 @@ To work on the plugin without installing it, run `claude --plugin-dir plugins/th
 | `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
 | `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity |
 | `/tnt:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge |
+| `/tnt:commit [hint]` | Commit current changes as single-line Conventional Commits (`type(scope): subject`), with no body and no co-author trailers; unrelated changes are split into separate commits |
 
 Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 
