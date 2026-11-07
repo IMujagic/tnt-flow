@@ -52,4 +52,4 @@ with the whole list if the items are small. Show the user the resulting features
 specs. Specs need explicit approval (`TNT approve <F> --by "<name>"`) before
 development. Offer to approve them one at a time as they review.
 
-Finish with `TNT status` and the next step: `/tnt:develop F-001`.
+Finish with `TNT status` and the next step: `/tnt:develop <id of the first feature>`.

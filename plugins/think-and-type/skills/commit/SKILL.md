@@ -60,7 +60,7 @@ the user staged them; don't re-stage.
 | `chore` | maintenance that fits none of the above |
 | `revert` | reverting an earlier commit |
 
-- **scope**: the main area affected, such as a package, module or directory name, or a feature id like `F-003` in a think-and-type project. Reuse the scopes already in `git log`. Omit the scope when the change is broad.
+- **scope**: the main area affected, such as a package, module or directory name, or a feature id like `F-7KQ2MX` in a think-and-type project. Reuse the scopes already in `git log`. Omit the scope when the change is broad.
 - **subject**: imperative mood ("add", not "added" or "adds"), starts lowercase, no trailing period, specific ("reject non-numeric input", not "update code").
 - **breaking change**: add `!` before the colon (`feat(api)!: drop v1 endpoints`). There is no footer to explain it, so the subject must say what breaks.
 - Keep the whole header to 72 characters or fewer.

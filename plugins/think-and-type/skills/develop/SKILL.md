@@ -37,6 +37,22 @@ says. The gate's verdict is the only one that counts. Subagents self-check with
 you, so attempts and commits stay accurate. Run it once per subagent return; never
 run it again to "confirm".
 
+### Integrating the base branch (once, right after green)
+
+Other developers keep merging into the base branch. Evidence for code that sits on a
+stale base doesn't prove the code that will actually ship. So when the phase reaches
+`green` and `syncedBase` in `TNT status <F> --json` is still null, integrate before
+you spawn the style-verifier:
+
+1. Pick the base: `baseBranch` from `TNT status <F> --json`. If the repo has a remote, run `git fetch` and use `origin/<baseBranch>` when it exists.
+2. If `git merge-base --is-ancestor <base> HEAD` succeeds, the base is already merged. Skip to step 4.
+3. Tell the user the base has moved and ask before merging. With their yes, run `git merge --no-edit <base>`. If it conflicts, stop and show the user the conflicting files. Never resolve conflicts in locked tests yourself.
+4. Run `TNT sync <F> --onto <base>`. If it says the code changed, green and every later gate were reset. The loop resumes at `red`, so the implementer re-records green on the merged code.
+5. If sync refuses because the merge changed locked tests, show the user `git diff <base> -- <files>` and the ACs those tests cover. Only on their explicit decision, run `TNT sync <F> --onto <base> --relock --by "<their name>" --reason "<why>"`.
+
+Integrate once per feature. If the base moves again later, don't loop. CI checks the
+real merge result with `tnt verify --integrated` (see the README).
+
 ### Briefing a subagent (the independence rules)
 
 Every prompt contains only:
@@ -85,4 +101,4 @@ Then wait.
 When the phase is `done`:
 1. Run `TNT report <F>` and `TNT ledger verify`.
 2. Show the user the report path, the gate table, the commits (`git log --oneline <base>..`), and any waivers or unlocks.
-3. Suggest the next feature from `TNT status`. Do not merge or push. The user decides that.
+3. Suggest the next feature from `TNT status`. Do not merge or push. The user decides that. Remind them that a pull request should pass `tnt verify --integrated` on its merge result, because the feature's own evidence covers only the branch's tree.

@@ -1,12 +1,14 @@
 // Harness operations: every state transition goes through here, is
 // validated against recorded evidence, and is appended to the ledger.
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
   TNT_DIR, GATES, PROJECT_FEATURE, TntError, sha256, toPosix, readJson, writeJson,
   git, gitToplevel, head, treeHash, isClean, changedFiles, readTreeFile, commitAll,
-  DEFAULT_CONFIG, configPath, loadConfig, readLedger, nextSeq, appendLedger, verifyLedger,
+  DEFAULT_CONFIG, configPath, loadConfig, readLedger, nextSeq, appendLedger, verifyLedger, verifyAllLedgers,
+  projectDir, scopeDir, FEATURE_ID, ensureLocalIgnores,
   featuresDir, listFeatures, resolveFeature, loadState, saveState, specPath, evidenceDir,
   activePath, readActive, SPEC_TEMPLATE, slugify, parseAcceptanceCriteria, acRegex, fileSha, relPath,
 } from './core.mjs';
@@ -23,8 +25,9 @@ export function init(cwd, { type = 'existing', force = false } = {}) {
   config.project = { name: path.basename(root), type };
   writeJson(configPath(root), config);
   fs.mkdirSync(featuresDir(root), { recursive: true });
-  fs.mkdirSync(path.join(root, TNT_DIR, 'evidence'), { recursive: true });
-  appendLedger(root, { type: 'init', feature: PROJECT_FEATURE, projectType: type });
+  fs.mkdirSync(evidenceDir(root, null), { recursive: true });
+  ensureLocalIgnores(root);
+  appendLedger(projectDir(root), { type: 'init', feature: PROJECT_FEATURE, projectType: type });
   return { root, config };
 }
 
@@ -61,33 +64,16 @@ export function execRecorded(root, opts) {
   }
   for (const a of artifacts) if (!fs.existsSync(path.resolve(root, a))) throw new TntError(`artifact not found: ${a}`);
 
-  const tree = treeHash(root);
-  const h = head(root);
-  const seq = nextSeq(root);
-  const t0 = Date.now();
-  const r = spawnSync(cmd, {
-    cwd: root, shell: resolveShell(config), maxBuffer: 512 * 1024 * 1024, timeout: config.timeouts.commandMs,
-    env: { ...process.env, TNT_FEATURE: feature, TNT_STEP: step },
-  });
-  const durationMs = Date.now() - t0;
-  const timedOut = r.error?.code === 'ETIMEDOUT';
-  const exit = typeof r.status === 'number' ? r.status : 1;
-  const stdout = r.stdout ? r.stdout.toString('utf8') : '';
-  const stderr = (r.stderr ? r.stderr.toString('utf8') : '') + (r.error && !timedOut ? `\n[tnt] spawn error: ${r.error.message}` : '');
-  const treeAfter = treeHash(root);
-  const expectMatched = expectRe ? expectRe.test(stdout + '\n' + stderr) : undefined;
+  const scope = scopeDir(root, featureDir);
+  const seq = nextSeq(scope);
+  const r = runCommand(root, config, { cmd, expectRe, env: { TNT_FEATURE: feature, TNT_STEP: step } });
+  const { tree, treeAfter, head: h, exit, timedOut, durationMs, expectMatched } = r;
 
   const evDir = evidenceDir(root, featureDir);
   fs.mkdirSync(evDir, { recursive: true });
   const stem = [String(seq).padStart(4, '0'), step, name, ac].filter(Boolean).join('-');
   const logAbs = path.join(evDir, `${stem}.log`);
-  const content = [
-    `$ ${cmd}`, `# exit: ${exit}${timedOut ? ' (timed out)' : ''}`, `# duration_ms: ${durationMs}`,
-    `# tree: ${tree}${tree !== treeAfter ? `  (MUTATED -> ${treeAfter})` : ''}`, `# head: ${h ?? '(none)'}`,
-    expect ? `# expect: /${expect}/m -> ${expectMatched ? 'matched' : 'NOT matched'}` : null,
-    '---- stdout ----', stdout, '---- stderr ----', stderr,
-  ].filter((l) => l !== null).join('\n');
-  fs.writeFileSync(logAbs, content);
+  fs.writeFileSync(logAbs, logText(cmd, expect, r));
 
   const savedArtifacts = artifacts.map((a, i) => {
     const src = path.resolve(root, a);
@@ -96,11 +82,40 @@ export function execRecorded(root, opts) {
     return { source: relPath(root, src), path: relPath(root, dest), sha256: sha256(fs.readFileSync(dest)) };
   });
 
-  return appendLedger(root, {
+  return appendLedger(scope, {
     type: 'run', feature, step, name, ac, cmd, exit, timedOut, durationMs, tree, treeAfter,
     mutated: tree !== treeAfter, head: h, log: relPath(root, logAbs), logSha256: sha256(fs.readFileSync(logAbs)),
     expect, expectMatched, artifacts: savedArtifacts.length ? savedArtifacts : undefined,
   });
+}
+
+// Runs one command in the project with the configured shell and reports what
+// happened, including whether it changed the working tree. Records nothing.
+function runCommand(root, config, { cmd, expectRe, env = {} }) {
+  const tree = treeHash(root);
+  const h = head(root);
+  const t0 = Date.now();
+  const r = spawnSync(cmd, {
+    cwd: root, shell: resolveShell(config), maxBuffer: 512 * 1024 * 1024, timeout: config.timeouts.commandMs,
+    env: { ...process.env, ...env },
+  });
+  const durationMs = Date.now() - t0;
+  const timedOut = r.error?.code === 'ETIMEDOUT';
+  const exit = typeof r.status === 'number' ? r.status : 1;
+  const stdout = r.stdout ? r.stdout.toString('utf8') : '';
+  const stderr = (r.stderr ? r.stderr.toString('utf8') : '') + (r.error && !timedOut ? `\n[tnt] spawn error: ${r.error.message}` : '');
+  const treeAfter = treeHash(root);
+  const expectMatched = expectRe ? expectRe.test(stdout + '\n' + stderr) : undefined;
+  return { tree, treeAfter, head: h, exit, timedOut, durationMs, stdout, stderr, expectMatched };
+}
+
+function logText(cmd, expect, r) {
+  return [
+    `$ ${cmd}`, `# exit: ${r.exit}${r.timedOut ? ' (timed out)' : ''}`, `# duration_ms: ${r.durationMs}`,
+    `# tree: ${r.tree}${r.tree !== r.treeAfter ? `  (MUTATED -> ${r.treeAfter})` : ''}`, `# head: ${r.head ?? '(none)'}`,
+    expect ? `# expect: /${expect}/m -> ${r.expectMatched ? 'matched' : 'NOT matched'}` : null,
+    '---- stdout ----', r.stdout, '---- stderr ----', r.stderr,
+  ].filter((l) => l !== null).join('\n');
 }
 
 export function baseline(root) {
@@ -113,15 +128,27 @@ export function baseline(root) {
 
 // ---------------------------------------------------------------- features
 
-export function newFeature(root, title) {
+// Crockford base32 (no I, L, O, U): 6 characters give about a billion ids, so
+// features planned on different branches don't collide when they merge.
+const ID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const randomId = () => 'F-' + [...crypto.randomBytes(6)].map((b) => ID_ALPHABET[b % 32]).join('');
+
+export function newFeature(root, title, { id: wanted } = {}) {
   if (!title || !title.trim()) throw new TntError('feature title required');
-  const nums = listFeatures(root).map((f) => Number(f.id.slice(2)));
-  const id = `F-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, '0')}`;
+  const taken = new Set(listFeatures(root).map((f) => f.id));
+  let id;
+  if (wanted) {
+    id = wanted.toUpperCase();
+    if (!FEATURE_ID.test(id)) throw new TntError(`feature id "${wanted}" must look like F-<letters and digits>, with no further "-" (e.g. F-042, F-PAY12)`);
+    if (taken.has(id)) throw new TntError(`feature ${id} already exists`);
+  } else {
+    do id = randomId(); while (taken.has(id));
+  }
   const dir = path.join(featuresDir(root), `${id}-${slugify(title)}`);
   fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
   fs.writeFileSync(specPath(dir), SPEC_TEMPLATE(id, title.trim()));
-  saveState(dir, { id, title: title.trim(), phase: 'draft', gates: {}, attempts: {}, locked: null, approval: null, base: null, branch: null, unlocks: [], waivers: [] });
-  appendLedger(root, { type: 'feature-created', feature: id, title: title.trim() });
+  saveState(dir, { id, title: title.trim(), created: new Date().toISOString(), phase: 'draft', gates: {}, attempts: {}, locked: null, approval: null, base: null, syncedBase: null, branch: null, unlocks: [], waivers: [] });
+  appendLedger(dir, { type: 'feature-created', feature: id, title: title.trim() });
   return { id, dir };
 }
 
@@ -143,7 +170,7 @@ export function approve(root, ref, { by }) {
   const spec = specInfo(f.dir);
   const problems = specProblems(spec);
   if (problems.length) throw new TntError(problems.join('; '));
-  const e = appendLedger(root, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id) });
+  const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id) });
   const state = loadState(f.dir);
   state.approval = { by, seq: e.seq, specSha: spec.sha };
   saveState(f.dir, state);
@@ -164,15 +191,18 @@ export function start(root, ref) {
   if (!isClean(root)) throw new TntError('working tree has uncommitted changes outside .tnt/; commit or stash them so the feature diff is attributable');
   let branch = null;
   const h = head(root);
+  const from = h ? git(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim() : '';
   if (config.git.branchPerFeature && h) {
     branch = `${config.git.branchPrefix}${f.dirName}`;
     git(root, ['checkout', '-q', '-b', branch]);
   }
   state.base = h ?? '';
+  state.baseBranch = from && from !== 'HEAD' ? from : null;
   state.branch = branch;
   saveState(f.dir, state);
+  ensureLocalIgnores(root);
   writeJson(activePath(root), { feature: f.id });
-  appendLedger(root, { type: 'start', feature: f.id, base: state.base, branch });
+  appendLedger(f.dir, { type: 'start', feature: f.id, base: state.base, branch });
   return { feature: f.id, branch, base: state.base };
 }
 
@@ -190,7 +220,7 @@ export function lockTests(root, ref, files, { replace = false } = {}) {
   }
   const set = new Set([...(replace || !state.locked ? [] : Object.keys(state.locked.files)), ...rels]);
   const hashes = Object.fromEntries([...set].sort().map((r) => [r, fileSha(root, r)]));
-  const e = appendLedger(root, { type: 'lock-tests', feature: f.id, files: hashes });
+  const e = appendLedger(f.dir, { type: 'lock-tests', feature: f.id, files: hashes });
   state.locked = { files: hashes, seq: e.seq };
   saveState(f.dir, state);
   return state.locked;
@@ -201,7 +231,7 @@ export function unlock(root, ref, { reason }) {
   const f = resolveFeature(root, ref);
   const state = loadState(f.dir);
   if (!state.gates.red) throw new TntError(`${f.id}: tests are not locked`);
-  const e = appendLedger(root, { type: 'unlock', feature: f.id, reason });
+  const e = appendLedger(f.dir, { type: 'unlock', feature: f.id, reason });
   clearFrom(state, 'red');
   state.phase = 'spec';
   state.unlocks.push({ seq: e.seq, reason });
@@ -340,7 +370,7 @@ const EVALUATORS = {
 
 function gateContext(root, f) {
   return {
-    root, f, state: loadState(f.dir), config: loadConfig(root), spec: specInfo(f.dir), ledger: readLedger(root), tree: treeHash(root),
+    root, f, state: loadState(f.dir), config: loadConfig(root), spec: specInfo(f.dir), ledger: readLedger(f.dir), tree: treeHash(root),
   };
 }
 
@@ -381,7 +411,7 @@ export function check(root, ref, g) {
 export function gate(root, ref, g) {
   const { f, ctx, reasons } = evaluate(root, ref, g);
   const pass = reasons.length === 0;
-  const e = appendLedger(root, { type: 'gate', feature: f.id, gate: g, pass, tree: ctx.tree, reasons: pass ? undefined : reasons });
+  const e = appendLedger(f.dir, { type: 'gate', feature: f.id, gate: g, pass, tree: ctx.tree, reasons: pass ? undefined : reasons });
   const state = loadState(f.dir);
   let commit = null;
   if (pass) {
@@ -411,7 +441,7 @@ export function waive(root, ref, g, { reason, by }) {
   const idx = GATES.indexOf(g);
   if (idx < 1) throw new TntError(`gate "${g}" cannot be waived`);
   for (const prev of GATES.slice(0, idx)) if (!ctx.state.gates[prev]) throw new TntError(`gate "${prev}" has not passed yet`);
-  const e = appendLedger(root, { type: 'waive', feature: f.id, gate: g, reason, by, tree: ctx.tree });
+  const e = appendLedger(f.dir, { type: 'waive', feature: f.id, gate: g, reason, by, tree: ctx.tree });
   const state = loadState(f.dir);
   clearFrom(state, g);
   state.gates[g] = { seq: e.seq, tree: ctx.tree, ts: e.ts, waived: true };
@@ -438,7 +468,9 @@ export function submitReview(root, ref, file) {
   if (!Array.isArray(review.findings)) errors.push('findings must be an array (empty if none)');
   if (errors.length) throw new TntError(errors.join('; '));
 
-  const changed = changedFiles(root, state.base || null, tree);
+  // After `tnt sync` the diff starts at the integrated base, so upstream work
+  // merged into the branch is not part of this feature's review.
+  const changed = changedFiles(root, state.syncedBase || state.base || null, tree);
   const reviewed = new Set(review.files_reviewed.map((p) => relPath(root, p)));
   const missed = changed.filter((c) => !reviewed.has(c));
   if (missed.length) errors.push(`not reviewed: ${missed.join(', ')} (every changed file must be read)`);
@@ -458,10 +490,10 @@ export function submitReview(root, ref, file) {
   if (review.verdict === 'approve' && (counts.blocking || counts.major)) errors.push('cannot approve with blocking or major findings');
   if (errors.length) throw new TntError(`review rejected:\n  - ${errors.join('\n  - ')}`);
 
-  const seq = nextSeq(root);
+  const seq = nextSeq(f.dir);
   const dest = path.join(f.dir, 'evidence', `${String(seq).padStart(4, '0')}-review.json`);
   writeJson(dest, review);
-  return appendLedger(root, { type: 'review', feature: f.id, verdict: review.verdict, counts, tree, file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
+  return appendLedger(f.dir, { type: 'review', feature: f.id, verdict: review.verdict, counts, tree, file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
 }
 
 export function submitAudit(root, ref, file) {
@@ -478,10 +510,10 @@ export function submitAudit(root, ref, file) {
   });
   if (report.verdict === 'pass' && report.checks?.some((c) => c.result === 'fail')) errors.push('verdict is pass but a check failed');
   if (errors.length) throw new TntError(`audit report rejected:\n  - ${errors.join('\n  - ')}`);
-  const seq = nextSeq(root);
+  const seq = nextSeq(f.dir);
   const dest = path.join(f.dir, 'evidence', `${String(seq).padStart(4, '0')}-audit.json`);
   writeJson(dest, report);
-  return appendLedger(root, { type: 'audit-report', feature: f.id, verdict: report.verdict, tree: treeHash(root), file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
+  return appendLedger(f.dir, { type: 'audit-report', feature: f.id, verdict: report.verdict, tree: treeHash(root), file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
 }
 
 // ---------------------------------------------------------------- independent re-verification
@@ -491,7 +523,7 @@ export function verify(root, ref) {
   const config = loadConfig(root);
   const state = loadState(f.dir);
   const failures = [];
-  const integrity = verifyLedger(root);
+  const integrity = verifyLedger(root, f.dir);
   failures.push(...integrity.errors.map((e) => `ledger: ${e}`));
   const tree = treeHash(root);
   if (!state.gates.green) failures.push('green gate has not passed');
@@ -510,7 +542,7 @@ export function verify(root, ref) {
   else failures.push('commands.test not configured');
   for (const name of config.style) if (config.commands[name]) rerun({ name, cmd: config.commands[name] }, (r) => (r.exit === 0 ? [] : [`exit ${r.exit}`]));
 
-  const ledger = readLedger(root);
+  const ledger = readLedger(f.dir);
   let acs = [];
   try { acs = specInfo(f.dir).acs; } catch (e) { failures.push(e.message); }
   const gatedTree = state.gates.green?.tree ?? tree;
@@ -524,8 +556,112 @@ export function verify(root, ref) {
     }
   }
   const ok = failures.length === 0;
-  const e = appendLedger(root, { type: 'verify', feature: f.id, ok, tree: treeHash(root), reruns, failures });
+  const e = appendLedger(f.dir, { type: 'verify', feature: f.id, ok, tree: treeHash(root), reruns, failures });
   return { ok, failures, seq: e.seq, reruns };
+}
+
+// Re-proves features on whatever tree is checked out, typically a pull
+// request's merge commit in CI. The branch's evidence was bound to the
+// branch's tree; the merged tree is new code that nobody has run. This runs
+// the full suite and style commands once, then every passing functional check
+// of each done feature, and judges the results from scratch. It writes nothing
+// to .tnt/ (CI must not need to commit), only optional logs under --out.
+export function verifyIntegrated(root, refs = [], { out } = {}) {
+  const config = loadConfig(root);
+  const failures = [];
+  const integrity = verifyAllLedgers(root);
+  failures.push(...integrity.errors.map((e) => `ledger ${e}`));
+
+  const all = listFeatures(root);
+  const selected = refs.length ? refs.map((r) => resolveFeature(root, r)) : all.filter((f) => f.state.base !== null);
+  for (const f of selected) if (f.state.phase !== 'done') failures.push(`${f.id} is not done (phase ${f.state.phase}); finish or remove it before merging`);
+
+  const tree = treeHash(root);
+  const runs = [];
+  if (out) fs.mkdirSync(out, { recursive: true });
+  const exec = (label, cmd, expect, extra = {}) => {
+    const r = runCommand(root, config, { cmd, expectRe: expect ? new RegExp(expect, 'm') : undefined, env: { TNT_STEP: 'integrated' } });
+    const problems = [];
+    if (r.exit !== 0) problems.push(`exit ${r.exit}`);
+    if (r.timedOut) problems.push('timed out');
+    if (expect && !r.expectMatched) problems.push('expected output no longer observed');
+    if (r.treeAfter !== r.tree) problems.push('modified the working tree');
+    if (problems.length) failures.push(`${label}: ${problems.join(', ')}`);
+    const run = { label, cmd, expect, exit: r.exit, expectMatched: r.expectMatched, ok: problems.length === 0, ...extra };
+    if (out) {
+      run.log = `${String(runs.length + 1).padStart(3, '0')}-${label.replace(/[^\w.-]+/g, '_')}.log`;
+      fs.writeFileSync(path.join(out, run.log), logText(cmd, expect, r));
+    }
+    runs.push(run);
+  };
+
+  if (config.commands.test) exec('test', config.commands.test);
+  else failures.push('commands.test not configured');
+  for (const name of config.style) if (config.commands[name]) exec(`style:${name}`, config.commands[name]);
+
+  for (const f of selected) {
+    const state = f.state;
+    if (!state.gates.green) continue;
+    const ledger = readLedger(f.dir);
+    let acs = [];
+    try { acs = specInfo(f.dir).acs; } catch (e) { failures.push(`${f.id}: ${e.message}`); }
+    for (const ac of acs) {
+      const passing = functionalRuns(ledger, f.id, ac.id, state.gates.green.tree).filter((e) => e.exit === 0 && e.expectMatched === true);
+      if (!passing.length) { failures.push(`${f.id} ${ac.id}: no passing functional evidence to reproduce`); continue; }
+      for (const run of passing) exec(`${f.id} ${ac.id}`, run.cmd, run.expect, { feature: f.id, ac: ac.id, from: run.seq });
+    }
+  }
+
+  const ok = failures.length === 0;
+  const result = { ok, tree, head: head(root), features: selected.map((f) => f.id), failures, runs };
+  if (out) writeJson(path.join(out, 'summary.json'), result);
+  return result;
+}
+
+// Integrates the base branch into a feature that is in progress. The user (or
+// the orchestrator) merges or rebases first; this records the new base, so the
+// review diff covers only the feature's own changes, and clears every gate
+// from green on when the merge changed the code, because the merged tree has
+// to be proven again. A merge that changed a locked test is refused unless a
+// human relocks those files with a recorded reason.
+export function sync(root, ref, { onto, relock = false, by, reason } = {}) {
+  const f = resolveFeature(root, ref);
+  const state = loadState(f.dir);
+  onto ||= state.baseBranch;
+  if (!onto) throw new TntError('--onto <ref> is required: the base branch or commit you merged into the feature branch');
+  if (state.base === null) throw new TntError(`${f.id}: not started; \`tnt start\` branches from the current base already`);
+  if (state.phase === 'done') throw new TntError(`${f.id} is done; check the merged result with \`tnt verify --integrated\` instead`);
+  const r = git(root, ['rev-parse', '--verify', '-q', `${onto}^{commit}`], { allowFail: true });
+  if (r.status !== 0) throw new TntError(`unknown ref ${onto}`);
+  const sha = r.stdout.trim();
+  if (git(root, ['merge-base', '--is-ancestor', sha, 'HEAD'], { allowFail: true }).status !== 0) {
+    throw new TntError(`${onto} (${sha.slice(0, 10)}) is not merged into HEAD; merge or rebase it first (\`git merge ${onto}\`), resolve conflicts, commit, then sync`);
+  }
+  if (!isClean(root)) throw new TntError('working tree has uncommitted changes outside .tnt/; commit the merge first');
+
+  let relocked;
+  if (state.gates.red && state.locked) {
+    const changed = Object.keys(state.locked.files).filter((file) => fileSha(root, file) !== state.locked.files[file]);
+    if (changed.length) {
+      if (!relock) {
+        throw new TntError(`the merge changed locked tests: ${changed.join(', ')}. Check that they still assert the spec, then a human re-locks them: `
+          + `tnt sync ${f.id} --onto ${onto} --relock --by "<name>" --reason "<why>"`);
+      }
+      if (!by || !reason) throw new TntError('--relock needs --by "<human>" and --reason "<why>": re-locking tests is a recorded human decision');
+      const missing = changed.filter((file) => fileSha(root, file) === null);
+      if (missing.length) throw new TntError(`locked tests deleted by the merge: ${missing.join(', ')}; restore them or \`tnt unlock\``);
+      relocked = Object.fromEntries(changed.map((file) => [file, fileSha(root, file)]));
+    }
+  }
+
+  const tree = treeHash(root);
+  const reset = Boolean(state.gates.green && state.gates.green.tree !== tree);
+  const e = appendLedger(f.dir, { type: 'sync', feature: f.id, onto: sha, ref: onto, tree, reset, relocked, by: relocked ? by : undefined, reason: relocked ? reason : undefined });
+  if (relocked) state.locked = { files: { ...state.locked.files, ...relocked }, seq: state.locked.seq };
+  if (reset) { clearFrom(state, 'green'); state.phase = 'red'; }
+  state.syncedBase = sha;
+  saveState(f.dir, state);
+  return { feature: f.id, onto: sha, seq: e.seq, reset, phase: state.phase, relocked: relocked ? Object.keys(relocked) : [] };
 }
 
 // ---------------------------------------------------------------- status / report
@@ -546,7 +682,7 @@ export function status(root, ref) {
   try { acs = parseAcceptanceCriteria(fs.readFileSync(specPath(f.dir), 'utf8')).map((a) => a.id); } catch { /* draft */ }
   return {
     id: f.id, title: state.title, dir: relPath(root, f.dir), phase: state.phase, nextGate: next,
-    started: state.base !== null, base: state.base, branch: state.branch, acs, gates: state.gates, attempts: state.attempts,
+    started: state.base !== null, base: state.base, baseBranch: state.baseBranch ?? null, syncedBase: state.syncedBase ?? null, branch: state.branch, acs, gates: state.gates, attempts: state.attempts,
     lockedTests: state.locked ? Object.keys(state.locked.files) : [], waivers: state.waivers, unlocks: state.unlocks,
     maxIterations: config.limits.maxIterations, active: active?.feature === f.id,
   };
@@ -555,8 +691,8 @@ export function status(root, ref) {
 export function writeReport(root, ref) {
   const f = resolveFeature(root, ref);
   const state = loadState(f.dir);
-  const ledger = readLedger(root).filter((e) => e.feature === f.id);
-  const integrity = verifyLedger(root);
+  const ledger = readLedger(f.dir);
+  const integrity = verifyLedger(root, f.dir);
   const row = (e) => `| #${e.seq} | ${e.step}${e.name ? ':' + e.name : ''}${e.ac ? ' ' + e.ac : ''} | \`${e.cmd.replace(/\|/g, '\\|').slice(0, 80)}\` | ${e.exit}${e.expect ? (e.expectMatched ? ' ✓expect' : ' ✗expect') : ''} | \`${e.tree.slice(0, 10)}\` | [log](${toPosix(path.relative(f.dir, path.join(root, e.log)))}) |`;
   const lines = [
     `# Evidence report: ${f.id} ${state.title}`, '',

@@ -10,6 +10,11 @@ import crypto from 'node:crypto';
 export const TNT_DIR = '.tnt';
 export const GATES = ['spec', 'red', 'green', 'style', 'review', 'functional', 'audit'];
 export const PROJECT_FEATURE = '_project';
+// Feature ids: "F-" plus uppercase letters and digits, no further "-" (the
+// directory is "<id>-<slug>"). New ids are random so developers who plan on
+// different branches never mint the same one.
+export const FEATURE_ID = /^F-[0-9A-Z]+$/;
+const FEATURE_DIR = /^(F-[0-9A-Z]+)(?=-|$)/;
 
 export class TntError extends Error {}
 
@@ -114,6 +119,10 @@ export function findRoot(start = process.cwd()) {
 export function requireRoot(start) {
   const root = findRoot(start);
   if (!root) throw new TntError(`No ${TNT_DIR}/config.json found. Run \`tnt init\` in the project root first.`);
+  if (fs.existsSync(path.join(root, TNT_DIR, 'ledger.jsonl'))) {
+    throw new TntError(`${TNT_DIR}/ledger.jsonl is the single shared ledger from tnt 0.1, which conflicts whenever two branches merge. `
+      + `This version keeps one ledger per feature. Move ${TNT_DIR}/ aside and run \`tnt init\` to start a fresh audit trail (git history keeps the old one).`);
+  }
   return root;
 }
 
@@ -145,36 +154,45 @@ export function loadConfig(root) {
 }
 
 // ---------------------------------------------------------------- ledger
+//
+// One hash chain per scope: each feature directory has its own ledger.jsonl,
+// and project-wide events (init, baseline, project probes) live in
+// .tnt/_project/. A feature is developed on one branch, so two branches never
+// append to the same file and merges don't conflict. Ordering across features
+// comes from git history, whose commits include each ledger.
 
-export const ledgerPath = (root) => path.join(root, TNT_DIR, 'ledger.jsonl');
+export const projectDir = (root) => path.join(root, TNT_DIR, PROJECT_FEATURE);
+export const scopeDir = (root, featureDir) => featureDir ?? projectDir(root);
+export const ledgerPath = (dir) => path.join(dir, 'ledger.jsonl');
 
-export function readLedger(root) {
-  const p = ledgerPath(root);
+export function readLedger(dir) {
+  const p = ledgerPath(dir);
   if (!fs.existsSync(p)) return [];
   return fs.readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean).map((line, i) => {
-    try { return JSON.parse(line); } catch { throw new TntError(`ledger line ${i + 1} is not valid JSON`); }
+    try { return JSON.parse(line); } catch { throw new TntError(`${p}: line ${i + 1} is not valid JSON`); }
   });
 }
 
-export function nextSeq(root) {
-  const l = readLedger(root);
+export function nextSeq(dir) {
+  const l = readLedger(dir);
   return l.length ? l[l.length - 1].seq + 1 : 1;
 }
 
-export function appendLedger(root, entry) {
-  const ledger = readLedger(root);
+export function appendLedger(dir, entry) {
+  const ledger = readLedger(dir);
   const last = ledger[ledger.length - 1];
   const body = { ...entry, seq: last ? last.seq + 1 : 1, ts: new Date().toISOString(), prev: last ? last.hash : 'GENESIS' };
   const full = { ...body, hash: sha256(stableStringify(body)) };
-  fs.appendFileSync(ledgerPath(root), JSON.stringify(full) + '\n');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(ledgerPath(dir), JSON.stringify(full) + '\n');
   return full;
 }
 
-export function verifyLedger(root) {
+export function verifyLedger(root, dir) {
   const errors = [];
   let prev = 'GENESIS';
   let ledger;
-  try { ledger = readLedger(root); } catch (e) { return { ok: false, errors: [e.message] }; }
+  try { ledger = readLedger(dir); } catch (e) { return { ok: false, errors: [e.message], count: 0 }; }
   ledger.forEach((e, i) => {
     const { hash, ...body } = e;
     if (e.seq !== i + 1) errors.push(`entry ${i + 1}: seq is ${e.seq}`);
@@ -194,6 +212,14 @@ export function verifyLedger(root) {
   return { ok: errors.length === 0, errors, count: ledger.length };
 }
 
+// Every ledger in the project: _project plus one per feature.
+export function verifyAllLedgers(root) {
+  const scopes = [{ scope: PROJECT_FEATURE, dir: projectDir(root) }, ...listFeatures(root).map((f) => ({ scope: f.id, dir: f.dir }))];
+  const ledgers = scopes.map(({ scope, dir }) => ({ scope, ...verifyLedger(root, dir) }));
+  const errors = ledgers.flatMap((l) => l.errors.map((e) => `${l.scope}: ${e}`));
+  return { ok: errors.length === 0, errors, count: ledgers.reduce((n, l) => n + l.count, 0), ledgers };
+}
+
 // ---------------------------------------------------------------- features
 
 export const featuresDir = (root) => path.join(root, TNT_DIR, 'features');
@@ -201,13 +227,13 @@ export const featuresDir = (root) => path.join(root, TNT_DIR, 'features');
 export function listFeatures(root) {
   const dir = featuresDir(root);
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((d) => /^F-\d{3,}/.test(d)).sort().map((d) => ({
-    id: d.match(/^F-\d+/)[0], dirName: d, dir: path.join(dir, d), state: loadState(path.join(dir, d)),
-  }));
+  return fs.readdirSync(dir).filter((d) => FEATURE_DIR.test(d) && fs.existsSync(statePath(path.join(dir, d))))
+    .map((d) => ({ id: d.match(FEATURE_DIR)[1], dirName: d, dir: path.join(dir, d), state: loadState(path.join(dir, d)) }))
+    .sort((a, b) => (a.state.created ?? '').localeCompare(b.state.created ?? '') || a.dirName.localeCompare(b.dirName));
 }
 
 export function resolveFeature(root, ref) {
-  if (!ref) throw new TntError('feature id required (e.g. F-001)');
+  if (!ref) throw new TntError('feature id required (e.g. F-7KQ2MX)');
   const want = ref.toUpperCase();
   const match = listFeatures(root).find((f) => f.id === want || f.dirName.toUpperCase() === want);
   if (!match) throw new TntError(`unknown feature ${ref}`);
@@ -218,10 +244,16 @@ export const statePath = (featureDir) => path.join(featureDir, 'state.json');
 export const loadState = (featureDir) => readJson(statePath(featureDir));
 export const saveState = (featureDir, state) => writeJson(statePath(featureDir), state);
 export const specPath = (featureDir) => path.join(featureDir, 'spec.md');
-export const evidenceDir = (root, featureDir) =>
-  featureDir ? path.join(featureDir, 'evidence') : path.join(root, TNT_DIR, 'evidence');
+export const evidenceDir = (root, featureDir) => path.join(scopeDir(root, featureDir), 'evidence');
 
+// active.json says which feature *this checkout* is working on. It is local
+// state, never committed: .tnt/.gitignore excludes it.
 export const activePath = (root) => path.join(root, TNT_DIR, 'active.json');
+export function ensureLocalIgnores(root) {
+  const p = path.join(root, TNT_DIR, '.gitignore');
+  const have = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+  if (!/^\/?active\.json$/m.test(have)) fs.writeFileSync(p, have + (have && !have.endsWith('\n') ? '\n' : '') + '# local to each checkout\nactive.json\n');
+}
 export function readActive(root) {
   const p = activePath(root);
   return fs.existsSync(p) ? readJson(p) : null;

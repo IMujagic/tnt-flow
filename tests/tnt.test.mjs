@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  tnt, git, write, read, makeProject, driveTo, SPEC, TEST_FILE, APP, FUNCTIONAL_CMD,
+  tnt, git, write, read, makeProject, driveTo, ledgerOf, SPEC, TEST_FILE, APP, FUNCTIONAL_CMD,
 } from './helpers.mjs';
 
 test('happy path reaches done with commits, report and an intact ledger', () => {
@@ -24,7 +24,7 @@ test('happy path reaches done with commits, report and an intact ledger', () => 
 
 test('approve rejects a spec that still has template placeholders', () => {
   const dir = makeProject();
-  tnt(dir, 'new', 'Add numbers');
+  tnt(dir, 'new', 'Add numbers', '--id', 'F-001');
   const r = tnt(dir, 'approve', 'F-001', '--by', 'Tester');
   assert.notEqual(r.code, 0);
   assert.match(r.out, /placeholders/);
@@ -142,8 +142,8 @@ test('a run that mutates the tree is not accepted as evidence', () => {
 
 test('editing a ledger entry or an evidence log is detected', () => {
   const dir = makeProject();
-  driveTo(dir, 'green');
-  const ledgerFile = path.join(dir, '.tnt', 'ledger.jsonl');
+  const fd = driveTo(dir, 'green');
+  const ledgerFile = path.join(dir, fd, 'ledger.jsonl');
   const lines = fs.readFileSync(ledgerFile, 'utf8').trim().split('\n');
   const idx = lines.findIndex((l) => l.includes('"step":"red"'));
   lines[idx] = lines[idx].replace('"exit":1', '"exit":0');
@@ -197,19 +197,20 @@ test('spec edits after approval block progress', () => {
 
 test('check evaluates a gate without recording, committing or counting attempts', () => {
   const dir = makeProject();
-  driveTo(dir, 'red');
-  const ledgerBefore = read(dir, '.tnt/ledger.jsonl');
+  const fd = driveTo(dir, 'red');
+  const ledgerFile = path.join(fd, 'ledger.jsonl');
+  const ledgerBefore = read(dir, ledgerFile);
   const headBefore = git(dir, 'rev-parse', 'HEAD').stdout;
   const fail = tnt(dir, 'check', 'F-001', 'green');
   assert.equal(fail.code, 1);
   assert.match(fail.out, /check green for F-001: FAIL/);
   write(dir, 'app.mjs', APP);
   tnt(dir, 'run', 'F-001', 'green');
-  const ledgerAfterRun = read(dir, '.tnt/ledger.jsonl');
+  const ledgerAfterRun = read(dir, ledgerFile);
   const pass = tnt(dir, 'check', 'F-001', 'green');
   assert.equal(pass.code, 0);
   assert.match(pass.out, /check green for F-001: PASS/);
-  assert.equal(read(dir, '.tnt/ledger.jsonl'), ledgerAfterRun);
+  assert.equal(read(dir, ledgerFile), ledgerAfterRun);
   assert.notEqual(ledgerAfterRun, ledgerBefore);
   assert.equal(git(dir, 'rev-parse', 'HEAD').stdout, headBefore);
   const st = JSON.parse(tnt(dir, 'status', 'F-001', '--json').stdout);
@@ -219,14 +220,14 @@ test('check evaluates a gate without recording, committing or counting attempts'
 
 test('extra functional runs add to the spec evidence instead of replacing it', () => {
   const dir = makeProject();
-  driveTo(dir, 'review');
+  const fd = driveTo(dir, 'review');
   tnt(dir, 'run', 'F-001', 'functional', '--ac', 'AC-1', '--expect', 'sum=5', '--', FUNCTIONAL_CMD);
   const extra = `node -e "import('./app.mjs').then(m => console.log('sum=' + m.add(-1, 1)))"`;
   tnt(dir, 'run', 'F-001', 'functional', '--ac', 'AC-1', '--expect', 'sum=0', '--', extra);
   assert.equal(tnt(dir, 'gate', 'F-001', 'functional').code, 0);
   const v = JSON.parse(tnt(dir, 'verify', 'F-001', '--json').stdout);
   assert.equal(v.ok, true);
-  const ledger = read(dir, '.tnt/ledger.jsonl').trim().split('\n').map((l) => JSON.parse(l));
+  const ledger = ledgerOf(dir, fd);
   const reruns = ledger.filter((e) => v.reruns.includes(e.seq) && e.name === 'functional');
   assert.deepEqual(reruns.map((e) => e.expect).sort(), ['sum=0', 'sum=5']);
 });

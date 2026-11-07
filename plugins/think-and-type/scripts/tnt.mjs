@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tnt: the think-and-type harness CLI. Every claim a workflow step makes must be
 // backed by something this tool recorded. Run `tnt help` for usage.
-import { TntError, requireRoot, GATES, PROJECT_FEATURE, loadConfig, verifyLedger, resolveFeature } from './lib/core.mjs';
+import { TntError, requireRoot, GATES, PROJECT_FEATURE, loadConfig, verifyAllLedgers, resolveFeature } from './lib/core.mjs';
 import * as h from './lib/harness.mjs';
 
 const USAGE = `tnt - think-and-type evidence harness
@@ -10,14 +10,16 @@ Project
   tnt init [--type existing|greenfield] [--force]   create .tnt/ (requires a git repo)
   tnt config check                                  validate configured commands
   tnt baseline                                      record test + style commands on the current tree
-  tnt ledger verify                                 check hash chain and evidence files
+  tnt ledger verify                                 check every ledger's hash chain and evidence files
 
 Features
-  tnt new "<title>"                                 create F-NNN with a spec.md template
+  tnt new "<title>" [--id F-XXX]                    create a feature (random collision-free id unless --id) with a spec.md template
   tnt approve <F> --by "<human>"                    record human approval of spec.md, pass the spec gate
   tnt start <F>                                     record base commit, create branch, mark active
   tnt lock-tests <F> <file>... [--replace]          freeze test files (before the red gate)
   tnt unlock <F> --reason "<why>"                   reopen tests; resets red and every later gate
+  tnt sync <F> [--onto <ref>]                       after you merge <ref> (default: the branch <F> started from) into the
+       [--relock --by "<human>" --reason "<why>"]   feature branch: record the new base; reset green and later gates if code changed
 
 Evidence
   tnt run <F> red|green                             run commands.test, record output
@@ -27,6 +29,7 @@ Evidence
   tnt review submit <F> <review.json>               validate and record a code review
   tnt audit submit <F> <audit.json>                 validate and record an audit report
   tnt verify <F>                                    re-run tests, style and functional evidence from scratch
+  tnt verify --integrated [<F>...] [--out <dir>]    re-prove done features on the current (merged) tree; records nothing, for CI
 
 Gates (${GATES.join(' > ')})
   tnt check <F> <gate>                              dry-run a gate: no ledger entry, commit or attempt (for subagents)
@@ -46,7 +49,7 @@ function parse(argv) {
     if (a === '--') { rest = argv.slice(i + 1); break; }
     if (a.startsWith('--')) {
       const key = a.slice(2);
-      if (['json', 'force', 'replace'].includes(key)) { flags[key] = true; continue; }
+      if (['json', 'force', 'replace', 'integrated', 'relock'].includes(key)) { flags[key] = true; continue; }
       const val = argv[++i];
       if (val === undefined) throw new TntError(`--${key} needs a value`);
       if (key === 'artifact') (flags.artifact ??= []).push(val); else flags[key] = val;
@@ -97,12 +100,13 @@ function main(argv) {
       return r.runs.every((x) => x.exit === 0 && !x.mutated) ? 0 : 1;
     }
     case 'ledger': {
-      const r = verifyLedger(root);
-      out(flags, r, () => (r.ok ? `ledger intact (${r.count} entries)` : 'LEDGER BROKEN:\n' + r.errors.map((e) => '  - ' + e).join('\n')));
+      if (args[0] !== 'verify') throw new TntError('usage: tnt ledger verify');
+      const r = verifyAllLedgers(root);
+      out(flags, r, () => (r.ok ? `ledgers intact (${r.ledgers.length} ledgers, ${r.count} entries)` : 'LEDGER BROKEN:\n' + r.errors.map((e) => '  - ' + e).join('\n')));
       return r.ok ? 0 : 1;
     }
     case 'new': {
-      const r = h.newFeature(root, args.join(' '));
+      const r = h.newFeature(root, args.join(' '), { id: flags.id });
       out(flags, r, `created ${r.id}: edit ${r.dir}/spec.md`);
       return 0;
     }
@@ -111,6 +115,11 @@ function main(argv) {
     case 'lock-tests': {
       const r = h.lockTests(root, args[0], args.slice(1), { replace: flags.replace });
       out(flags, r, `locked (ledger #${r.seq}):\n${Object.keys(r.files).map((x) => '  ' + x).join('\n')}`);
+      return 0;
+    }
+    case 'sync': {
+      const r = h.sync(root, args[0], { onto: flags.onto, relock: flags.relock, by: flags.by, reason: flags.reason });
+      out(flags, r, `${r.feature} synced onto ${r.onto.slice(0, 10)} (ledger #${r.seq})${r.relocked.length ? `; re-locked ${r.relocked.join(', ')}` : ''}${r.reset ? '; code changed, so green and later gates were reset: re-run green' : '; code unchanged, gates kept'}; phase=${r.phase}`);
       return 0;
     }
     case 'unlock': { const r = h.unlock(root, args[0], { reason: flags.reason }); out(flags, r, `${r.id}: tests unlocked; red and later gates reset`); return 0; }
@@ -159,6 +168,15 @@ function main(argv) {
       return 0;
     }
     case 'verify': {
+      if (flags.integrated) {
+        const r = h.verifyIntegrated(root, args, { out: flags.out });
+        out(flags, r, () => [
+          `integrated verify ${r.ok ? 'PASS' : 'FAIL'} on tree ${r.tree.slice(0, 10)} (features: ${r.features.join(', ') || 'none'}); nothing recorded`,
+          ...r.runs.map((x) => `  ${x.ok ? 'ok  ' : 'FAIL'} ${x.label}  exit=${x.exit}${x.expect ? ` expect=${x.expectMatched ? 'matched' : 'NOT-matched'}` : ''}${x.log ? '  log=' + x.log : ''}`),
+          ...r.failures.map((x) => '  - ' + x),
+        ].join('\n'));
+        return r.ok ? 0 : 1;
+      }
       const r = h.verify(root, args[0]);
       out(flags, r, () => (r.ok ? `verify PASS (ledger #${r.seq}; re-runs ${r.reruns.map((s) => '#' + s).join(' ')})` : `verify FAIL (ledger #${r.seq}):\n${r.failures.map((x) => '  - ' + x).join('\n')}`));
       return r.ok ? 0 : 1;

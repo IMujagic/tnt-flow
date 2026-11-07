@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse guard. Keeps evidence tamper-proof and steps independent:
-//  1. Nobody writes harness-owned files (ledger, state, evidence, reports)
+//  1. Nobody writes harness-owned files (ledgers, state, evidence, reports)
 //     except through the tnt CLI.
 //  2. Once the red gate passes, locked test files are read-only until the
 //     orchestrator runs `tnt unlock`.
@@ -11,10 +11,11 @@ import path from 'node:path';
 
 const TNT = '.tnt';
 const PROTECTED = [
-  /^\.tnt\/ledger\.jsonl$/,
+  /^\.tnt\/ledger\.jsonl$/, // the single ledger of tnt 0.1
   /^\.tnt\/active\.json$/,
   /^\.tnt\/evidence\//,
-  /^\.tnt\/features\/[^/]+\/(state\.json|report\.md)$/,
+  /^\.tnt\/_project\/(ledger\.jsonl$|evidence\/)/,
+  /^\.tnt\/features\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
   /^\.tnt\/features\/[^/]+\/evidence\//,
 ];
 const VERIFIER_WRITABLE = {
@@ -65,7 +66,7 @@ if (FILE_TOOLS.has(tool)) {
 if (SHELL_TOOLS.has(tool)) {
   const cmd = posix(String(input.tool_input?.command || ''));
   if (!writes(cmd)) process.exit(0);
-  if (/\.tnt\/(ledger\.jsonl|active\.json|evidence\/|features\/[^\s'"]+\/(state\.json|report\.md|evidence\/))/.test(cmd)) {
+  if (/\.tnt\/(ledger\.jsonl|active\.json|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
     deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
   }
   for (const file of locked) {

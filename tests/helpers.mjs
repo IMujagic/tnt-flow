@@ -76,49 +76,57 @@ test('AC-1: add returns the sum', async () => {
 export const APP = 'export const add = (a, b) => a + b;\n';
 export const FUNCTIONAL_CMD = `node -e "import('./app.mjs').then(m => console.log('sum=' + m.add(2, 3)))"`;
 
-export function featureDir(dir) {
-  const fdir = fs.readdirSync(path.join(dir, '.tnt', 'features')).find((d) => d.startsWith('F-001'));
+export function featureDir(dir, id = 'F-001') {
+  const fdir = fs.readdirSync(path.join(dir, '.tnt', 'features')).find((d) => d.startsWith(id + '-'));
   return path.join('.tnt', 'features', fdir);
 }
 
-// Drive a feature up to (and including) the named gate.
-export function driveTo(dir, last) {
+export const ledgerOf = (dir, fd) => read(dir, path.join(fd, 'ledger.jsonl')).trim().split('\n').map((l) => JSON.parse(l));
+export const branch = (dir) => git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+
+// Drive a feature up to (and including) the named gate. `module` names the
+// source file (app.mjs) and its test (app.test.mjs), so several features can
+// live in one repo.
+export function driveTo(dir, last, { id = 'F-001', module = 'app' } = {}) {
   const order = ['spec', 'red', 'green', 'style', 'review', 'functional', 'audit'];
   const upto = order.indexOf(last);
   const must = (r) => { if (r.code !== 0) throw new Error(r.out); return r; };
-  must(tnt(dir, 'new', 'Add numbers'));
-  const fd = featureDir(dir);
+  const src = `${module}.mjs`;
+  const testFile = `${module}.test.mjs`;
+  const fix = (x) => x.replaceAll('./app.mjs', `./${src}`);
+  must(tnt(dir, 'new', 'Add numbers', '--id', id));
+  const fd = featureDir(dir, id);
   write(dir, path.join(fd, 'spec.md'), SPEC);
-  must(tnt(dir, 'approve', 'F-001', '--by', 'Tester'));
+  must(tnt(dir, 'approve', id, '--by', 'Tester'));
   if (upto < 1) return fd;
-  must(tnt(dir, 'start', 'F-001'));
-  write(dir, 'app.test.mjs', TEST_FILE);
-  must(tnt(dir, 'lock-tests', 'F-001', 'app.test.mjs'));
-  must(tnt(dir, 'run', 'F-001', 'red'));
-  must(tnt(dir, 'gate', 'F-001', 'red'));
+  must(tnt(dir, 'start', id));
+  write(dir, testFile, fix(TEST_FILE));
+  must(tnt(dir, 'lock-tests', id, testFile));
+  must(tnt(dir, 'run', id, 'red'));
+  must(tnt(dir, 'gate', id, 'red'));
   if (upto < 2) return fd;
-  write(dir, 'app.mjs', APP);
-  must(tnt(dir, 'run', 'F-001', 'green'));
-  must(tnt(dir, 'gate', 'F-001', 'green'));
+  write(dir, src, APP);
+  must(tnt(dir, 'run', id, 'green'));
+  must(tnt(dir, 'gate', id, 'green'));
   if (upto < 3) return fd;
-  must(tnt(dir, 'run', 'F-001', 'style'));
-  must(tnt(dir, 'gate', 'F-001', 'style'));
+  must(tnt(dir, 'run', id, 'style'));
+  must(tnt(dir, 'gate', id, 'style'));
   if (upto < 4) return fd;
   write(dir, path.join(fd, 'review.draft.json'), JSON.stringify({
-    verdict: 'approve', summary: 'ok', files_reviewed: ['app.mjs', 'app.test.mjs'],
-    findings: [{ id: 'R1', severity: 'nit', file: 'app.mjs', line: 1, quote: 'export const add', issue: 'consider JSDoc' }],
+    verdict: 'approve', summary: 'ok', files_reviewed: [src, testFile],
+    findings: [{ id: 'R1', severity: 'nit', file: src, line: 1, quote: 'export const add', issue: 'consider JSDoc' }],
   }));
-  must(tnt(dir, 'review', 'submit', 'F-001', path.join(fd, 'review.draft.json')));
-  must(tnt(dir, 'gate', 'F-001', 'review'));
+  must(tnt(dir, 'review', 'submit', id, path.join(fd, 'review.draft.json')));
+  must(tnt(dir, 'gate', id, 'review'));
   if (upto < 5) return fd;
-  must(tnt(dir, 'run', 'F-001', 'functional', '--ac', 'AC-1', '--expect', 'sum=5', '--', FUNCTIONAL_CMD));
-  must(tnt(dir, 'gate', 'F-001', 'functional'));
+  must(tnt(dir, 'run', id, 'functional', '--ac', 'AC-1', '--expect', 'sum=5', '--', fix(FUNCTIONAL_CMD)));
+  must(tnt(dir, 'gate', id, 'functional'));
   if (upto < 6) return fd;
-  must(tnt(dir, 'verify', 'F-001'));
+  must(tnt(dir, 'verify', id));
   write(dir, path.join(fd, 'audit.draft.json'), JSON.stringify({
-    verdict: 'pass', checks: [{ name: 'tests assert AC-1 behaviour', result: 'pass', evidence: 'app.test.mjs:5' }],
+    verdict: 'pass', checks: [{ name: 'tests assert AC-1 behaviour', result: 'pass', evidence: `${testFile}:5` }],
   }));
-  must(tnt(dir, 'audit', 'submit', 'F-001', path.join(fd, 'audit.draft.json')));
-  must(tnt(dir, 'gate', 'F-001', 'audit'));
+  must(tnt(dir, 'audit', 'submit', id, path.join(fd, 'audit.draft.json')));
+  must(tnt(dir, 'gate', id, 'audit'));
   return fd;
 }

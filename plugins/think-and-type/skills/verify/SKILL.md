@@ -14,4 +14,10 @@ argument-hint: "<F-xxx>"
    the report path. If the feature was already `done` and verification now fails,
    say so prominently. Its proof no longer holds for the current code.
 
+If the user wants to check a merge result (a pull request's merge commit, or the base
+branch after features were merged), run `TNT verify --integrated` instead, optionally
+followed by feature ids. It re-proves every done feature on the current tree, runs the
+suite and style checks once, and records nothing. Show its output verbatim and skip
+steps 2 and 3.
+
 Do not fix anything here. Offer to route the failures through `/tnt:develop`.

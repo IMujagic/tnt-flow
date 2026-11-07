@@ -11,6 +11,9 @@ before you act. These rules override habits.
 - Evidence is bound to a **tree hash**: the content of the working tree, not including
   `.tnt/`. Once you change any code, every earlier piece of evidence stops
   applying to the new code.
+- Each feature has its own ledger (`.tnt/features/<F-dir>/ledger.jsonl`), so `#<seq>`
+  always means an entry in that feature's ledger. Project-wide events live in
+  `.tnt/_project/`.
 - You never write files under `.tnt/` yourself, except `spec.md`, `project.md`,
   and draft files that your instructions name. A hook blocks the rest.
 - Never fake, filter or summarise command output into evidence. Run the real
@@ -36,7 +39,9 @@ project root. Useful commands:
 
 **Never run `TNT gate`.** Deciding a gate is the orchestrator's job, and each `gate`
 call is recorded, counts as an attempt, and may commit. Use `TNT check` to see what
-the gate will say. It records nothing.
+the gate will say. It records nothing. `TNT sync`, `TNT unlock` and `TNT waive` also
+belong to the orchestrator and the human, never to a step. Don't merge or rebase
+branches either.
 
 Logs land in `.tnt/features/<F>/evidence/`. Read them to diagnose a failure.
 

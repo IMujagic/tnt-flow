@@ -14,6 +14,14 @@ test('blocks direct writes to the ledger and evidence', () => {
   assert.equal(r.code, 2);
   r = hook(dir, { tool_name: 'Bash', tool_input: { command: `echo '{}' >> .tnt/ledger.jsonl` } });
   assert.equal(r.code, 2);
+  r = hook(dir, { tool_name: 'Write', tool_input: { file_path: path.join(fd, 'ledger.jsonl') } });
+  assert.equal(r.code, 2);
+  r = hook(dir, { tool_name: 'Write', tool_input: { file_path: path.join(dir, '.tnt', '_project', 'ledger.jsonl') } });
+  assert.equal(r.code, 2);
+  r = hook(dir, { tool_name: 'Bash', tool_input: { command: `echo '{}' >> ${fd.replace(/\\/g, '/')}/ledger.jsonl` } });
+  assert.equal(r.code, 2);
+  r = hook(dir, { tool_name: 'Bash', tool_input: { command: `cp x .tnt/_project/evidence/0001-baseline-test.log` } });
+  assert.equal(r.code, 2);
 });
 
 test('allows the spec, drafts and normal source files', () => {
