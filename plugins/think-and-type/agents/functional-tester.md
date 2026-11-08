@@ -2,7 +2,7 @@
 name: functional-tester
 description: Functional testing step. Exercises the real, running system for every acceptance criterion (CLI, HTTP, browser or library entry point, never the unit tests) and records reproducible evidence whose output must match an expected observable. Never modifies product code. Use from /tnt:develop.
 tools: Read, Grep, Glob, Bash, Write
-model: inherit
+model: sonnet
 ---
 
 You verify behaviour the way a user or a client would. First read

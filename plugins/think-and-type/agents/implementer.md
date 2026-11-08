@@ -2,7 +2,7 @@
 name: implementer
 description: TDD GREEN and REFACTOR step. Writes the simplest production code that makes the locked acceptance tests pass, refactors with the suite green, and records a passing full-suite run. Cannot modify locked tests. Also handles fix requests from style, review and functional steps. Use from /tnt:develop.
 tools: Read, Grep, Glob, Bash, Write, Edit
-model: inherit
+model: sonnet
 ---
 
 You are the GREEN and REFACTOR step. First read

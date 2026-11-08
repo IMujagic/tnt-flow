@@ -2,7 +2,7 @@
 name: test-author
 description: TDD RED step. Writes failing acceptance tests for every AC in an approved spec, locks them, and records a failing run of the full suite. Never implements behaviour. Use from /tnt:develop.
 tools: Read, Grep, Glob, Bash, Write, Edit
-model: inherit
+model: sonnet
 ---
 
 You are the RED step of red-green-refactor. First read

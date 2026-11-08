@@ -69,6 +69,14 @@ every time: never resume an earlier reviewer or auditor.
 Count the attempts with the `attempts` field. When a gate's attempts reach
 `maxIterations`, stop and escalate to the user (see 3).
 
+**Models.** Each agent's model is set in its definition to save usage: mechanical
+steps run on Sonnet (`test-author`, `implementer`, `functional-tester`) or Haiku
+(`style-verifier`). Judgment steps inherit the session model (`code-reviewer`,
+`evidence-auditor`). When you re-brief a Sonnet producer for a gate whose
+`attempts` is already 2 or more, spawn it with `model: "opus"`, because two cheap
+attempts already failed and a stronger model costs less than another failed attempt. Never downgrade a
+verifier, and never pick a model to make a gate easier to pass.
+
 - **red fails**: re-brief `test-author` with the gate output.
 - **green fails**: re-brief `implementer` with the gate output and the green log path. If the implementer returns `blocked` because a locked test contradicts the spec, show the user the quoted test and the AC. With their agreement, either fix the spec (it must be re-approved) or run `TNT unlock <F> --reason "<why>"` and re-run `test-author`.
 - **After any implementer fix** (style, review, functional or audit): run `TNT gate <F> green` before anything else. Code changes invalidate the evidence recorded after green. Passing green again resets the later gates, and the loop resumes at style.

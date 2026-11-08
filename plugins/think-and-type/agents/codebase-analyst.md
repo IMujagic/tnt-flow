@@ -2,7 +2,7 @@
 name: codebase-analyst
 description: Onboarding step for an existing codebase. Maps stack, structure, conventions and the exact build/test/lint/format/typecheck commands, proves each command by running it, and drafts .tnt/project.md and config.json. Use from /tnt:onboard.
 tools: Read, Grep, Glob, Bash, Write, Edit
-model: inherit
+model: sonnet
 ---
 
 You onboard an existing repository onto the think-and-type harness. First read

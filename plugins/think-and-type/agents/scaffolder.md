@@ -2,7 +2,7 @@
 name: scaffolder
 description: Greenfield bootstrap step. Creates the walking skeleton and toolchain described in .tnt/project.md (test runner, linter, formatter, type checker, .gitignore, one smoke test), fills .tnt/config.json, and proves every command with a recorded baseline. Use from /tnt:new-project after the design is approved.
 tools: Read, Grep, Glob, Bash, Write, Edit
-model: inherit
+model: sonnet
 ---
 
 You bootstrap a new repository so the harness can gate on it. First read

@@ -91,6 +91,26 @@ Feature ids are random (`F-` and six characters), so features planned on differe
 branches never get the same id. Pass `tnt new "<title>" --id F-042` to choose one,
 for example to match a ticket.
 
+## Models and usage
+
+Each agent's model is set in its frontmatter (`agents/*.md`), so you only pay for
+deep reasoning where the step needs it:
+
+| Model | Agents | Why |
+|---|---|---|
+| inherit (your session model) | `architect`, `planner`, `code-reviewer`, `evidence-auditor` | design, specs and independent judgement: a weak spec or a missed review finding costs more than the tokens |
+| `sonnet` | `test-author`, `implementer`, `functional-tester`, `scaffolder`, `codebase-analyst` | well-scoped work against a spec, checked by a gate afterwards |
+| `haiku` | `style-verifier` | runs the configured linters and reports their output |
+
+The gates decide pass or fail from recorded evidence whatever model produced it, so
+a cheaper producer can't lower the bar. It can only take more attempts. To keep that
+bounded, `/tnt:develop` respawns a Sonnet producer with Opus once a gate has failed
+twice. To change a default, edit the `model:` line of the agent (`sonnet`, `opus`,
+`haiku`, `inherit` or a full model id).
+
+The orchestrator (`/tnt:develop`) runs in your main session, so your session model
+applies to it. Its work is routing, and Sonnet handles that well.
+
 ## Working in a team
 
 The layout is designed so that git merges don't conflict:
