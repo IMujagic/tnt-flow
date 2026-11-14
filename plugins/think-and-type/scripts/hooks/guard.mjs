@@ -12,7 +12,7 @@ import path from 'node:path';
 const TNT = '.tnt';
 const PROTECTED = [
   /^\.tnt\/ledger\.jsonl$/, // the single ledger of tnt 0.1
-  /^\.tnt\/active\.json$/,
+  /^\.tnt\/(active\.json|view\.html)$/,
   /^\.tnt\/evidence\//,
   /^\.tnt\/_project\/(ledger\.jsonl$|evidence\/)/,
   /^\.tnt\/features\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
@@ -66,7 +66,7 @@ if (FILE_TOOLS.has(tool)) {
 if (SHELL_TOOLS.has(tool)) {
   const cmd = posix(String(input.tool_input?.command || ''));
   if (!writes(cmd)) process.exit(0);
-  if (/\.tnt\/(ledger\.jsonl|active\.json|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
+  if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
     deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
   }
   for (const file of locked) {

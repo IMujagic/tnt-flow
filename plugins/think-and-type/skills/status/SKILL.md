@@ -12,5 +12,9 @@ Run `TNT status $ARGUMENTS` and `TNT ledger verify`. For one feature, also read 
 - the latest failed gate attempt and its reasons (from `TNT status <F> --json` attempts and the report's "Failed gate attempts")
 - waivers and unlocks, with their reasons
 
+If the user wants to see how a feature was built, run `TNT view <F> --open`. It writes
+`.tnt/view.html`, a browsable timeline of the ledger with the code diff at every change,
+and opens it. Tell them the path in case no browser opens.
+
 Report only what the CLI output shows. If the ledger check fails, lead with that,
 because a broken ledger means no evidence can be trusted.

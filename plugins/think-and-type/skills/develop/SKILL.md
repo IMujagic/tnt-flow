@@ -107,6 +107,6 @@ Then wait.
 ## 4. Finish
 
 When the phase is `done`:
-1. Run `TNT report <F>` and `TNT ledger verify`.
-2. Show the user the report path, the gate table, the commits (`git log --oneline <base>..`), and any waivers or unlocks.
+1. Run `TNT report <F>`, `TNT ledger verify` and `TNT view <F>`. The last one writes `.tnt/view.html`, a timeline of the ledger with code diffs.
+2. Show the user the report and viewer paths, the gate table, the commits (`git log --oneline <base>..`), and any waivers or unlocks.
 3. Suggest the next feature from `TNT status`. Do not merge or push. The user decides that. Remind them that a pull request should pass `tnt verify --integrated` on its merge result, because the feature's own evidence covers only the branch's tree.

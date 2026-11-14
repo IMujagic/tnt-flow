@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 // tnt: the think-and-type harness CLI. Every claim a workflow step makes must be
 // backed by something this tool recorded. Run `tnt help` for usage.
+import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { TntError, requireRoot, GATES, PROJECT_FEATURE, loadConfig, verifyAllLedgers, resolveFeature } from './lib/core.mjs';
 import * as h from './lib/harness.mjs';
+import { writeView } from './lib/view.mjs';
+
+// Best effort: hand the file to the OS default browser and don't wait for it.
+function openInBrowser(file) {
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', file]]
+    : process.platform === 'darwin' ? ['open', [file]] : ['xdg-open', [file]];
+  try { spawn(cmd, args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: process.platform === 'win32' }).on('error', () => {}).unref(); } catch { /* no browser available */ }
+}
 
 const USAGE = `tnt - think-and-type evidence harness
 
@@ -39,6 +49,7 @@ Gates (${GATES.join(' > ')})
 Reporting
   tnt status [<F>] [--json]                         features and gate state
   tnt report <F>                                    write features/<F>/report.md
+  tnt view [<F>...] [--out <file>] [--open]         write .tnt/view.html: the ledger as a browsable timeline with code diffs
 
 Global: --json for machine-readable output.`;
 
@@ -49,7 +60,7 @@ function parse(argv) {
     if (a === '--') { rest = argv.slice(i + 1); break; }
     if (a.startsWith('--')) {
       const key = a.slice(2);
-      if (['json', 'force', 'replace', 'integrated', 'relock'].includes(key)) { flags[key] = true; continue; }
+      if (['json', 'force', 'replace', 'integrated', 'relock', 'open'].includes(key)) { flags[key] = true; continue; }
       const val = argv[++i];
       if (val === undefined) throw new TntError(`--${key} needs a value`);
       if (key === 'artifact') (flags.artifact ??= []).push(val); else flags[key] = val;
@@ -189,6 +200,13 @@ function main(argv) {
       return 0;
     }
     case 'report': { const p = h.writeReport(root, args[0]); out(flags, { path: p }, `wrote ${p}`); return 0; }
+    case 'view': {
+      const r = writeView(root, { refs: args, out: flags.out });
+      const shown = path.relative(root, r.path).startsWith('..') ? r.path : path.relative(root, r.path);
+      out(flags, r, `wrote ${shown.split(path.sep).join('/')} (${r.features.length} feature${r.features.length === 1 ? '' : 's'})${flags.open ? '; opening it' : '; open it in a browser, or pass --open'}`);
+      if (flags.open) openInBrowser(r.path);
+      return 0;
+    }
     default:
       throw new TntError(`unknown command "${cmd}". Run \`tnt help\`.`);
   }

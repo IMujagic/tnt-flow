@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeView } from './view.mjs';
 import {
   TNT_DIR, GATES, PROJECT_FEATURE, TntError, sha256, toPosix, readJson, writeJson,
   git, gitToplevel, head, treeHash, isClean, changedFiles, readTreeFile, commitAll,
@@ -614,7 +615,10 @@ export function verifyIntegrated(root, refs = [], { out } = {}) {
 
   const ok = failures.length === 0;
   const result = { ok, tree, head: head(root), features: selected.map((f) => f.id), failures, runs };
-  if (out) writeJson(path.join(out, 'summary.json'), result);
+  if (out) {
+    writeJson(path.join(out, 'summary.json'), result);
+    writeView(root, { out: path.join(out, 'view.html') });
+  }
   return result;
 }
 

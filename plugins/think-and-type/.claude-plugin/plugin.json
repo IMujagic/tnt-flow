@@ -1,7 +1,7 @@
 {
   "name": "tnt",
   "displayName": "Think and Type",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Evidence-gated development workflow: plan, then build each feature through independent subagents for TDD (red/green), style, code review, functional testing and audit. Every gate is proven by recorded command output, not claims.",
   "author": { "name": "Ismar Mujagic" },
   "license": "MIT",

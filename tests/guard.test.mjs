@@ -22,6 +22,8 @@ test('blocks direct writes to the ledger and evidence', () => {
   assert.equal(r.code, 2);
   r = hook(dir, { tool_name: 'Bash', tool_input: { command: `cp x .tnt/_project/evidence/0001-baseline-test.log` } });
   assert.equal(r.code, 2);
+  r = hook(dir, { tool_name: 'Write', tool_input: { file_path: path.join(dir, '.tnt', 'view.html') } });
+  assert.equal(r.code, 2);
 });
 
 test('allows the spec, drafts and normal source files', () => {

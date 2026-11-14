@@ -65,7 +65,7 @@ To work on the plugin without installing it, run `claude --plugin-dir plugins/th
 | `/tnt:new-project <idea>` | Greenfield: brief, architect design, scaffold a proven toolchain, seed a backlog |
 | `/tnt:plan <request>` | Slice a request into features with AC-based specs; you approve each one |
 | `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
-| `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity |
+| `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity. Offers to open the ledger viewer |
 | `/tnt:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge. Ask it to check a merge result to run `tnt verify --integrated` |
 | `/tnt:commit [hint]` | Commit current changes as single-line Conventional Commits (`type(scope): subject`), with no body and no co-author trailers; unrelated changes are split into separate commits |
 
@@ -75,7 +75,7 @@ Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 .tnt/
   config.json          commands the gates run, git and limit settings
   project.md           architecture, conventions, functional-test approach
-  .gitignore           keeps active.json (this checkout's current feature) out of git
+  .gitignore           keeps local files out of git: active.json (this checkout's feature), view.html
   _project/
     ledger.jsonl       hash chain for init, baseline and project probes (CLI-only)
     evidence/          baseline logs (CLI-only)
@@ -90,6 +90,25 @@ Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 Feature ids are random (`F-` and six characters), so features planned on different
 branches never get the same id. Pass `tnt new "<title>" --id F-042` to choose one,
 for example to match a ticket.
+
+## Seeing how a feature was built
+
+```bash
+node plugins/think-and-type/scripts/tnt.mjs view --open
+```
+
+`tnt view [<F>...] [--out <file>] [--open]` writes `.tnt/view.html`, one self-contained page
+(no network, git-ignored) that shows each feature's ledger as a timeline:
+
+- every approval, lock, run, gate decision, review, audit, sync, unlock and waiver, in order, with the command output, gate reasons and review findings one click away
+- human decisions highlighted, and any entry whose hash, chain link or log file doesn't check out marked as broken
+- **the code diff wherever the recorded code changed**: base to red shows the tests that were added, red to green the implementation, and each later change the fix that followed a failed gate or review
+
+Each colour in the timeline is one version of the code, so you can see which runs and
+gates belong to which version. Diffs come from the trees the harness recorded. Trees
+that were never committed are eventually pruned by `git gc`, and the page then says
+the diff is no longer available. The page is generated from the ledger and is never
+used as evidence.
 
 ## Models and usage
 
@@ -118,7 +137,7 @@ The layout is designed so that git merges don't conflict:
 - **One ledger per feature.** A feature is built on its own branch, so two developers never append to the same chain. Merging two finished features adds two directories and touches nothing shared. Rule of thumb: one owner per feature. If two people need to work on one, split it into two features.
 - **Local state stays local.** `active.json` (one active feature per checkout) is git-ignored.
 - **Integrating the base branch.** Once green passes, `/tnt:develop` merges the base branch into the feature branch (after asking you), then runs `tnt sync <F>`. That records the new base, limits the code review to the feature's own diff, and resets green and every later gate if the merge changed the code, so the merged code is proven again. If the merge changed a locked test, `sync` refuses until a human re-locks it with `--relock --by … --reason …`.
-- **CI checks the merge result.** The evidence on a branch is bound to that branch's tree, and the merge commit is code nobody ran. `tnt verify --integrated` re-runs the full suite and style checks, plus the functional checks of every done feature, on the checked-out tree. It fails if a feature in the tree isn't done, and it writes nothing to `.tnt/`. `--out <dir>` saves logs and a `summary.json` for CI artifacts.
+- **CI checks the merge result.** The evidence on a branch is bound to that branch's tree, and the merge commit is code nobody ran. `tnt verify --integrated` re-runs the full suite and style checks, plus the functional checks of every done feature, on the checked-out tree. It fails if a feature in the tree isn't done, and it writes nothing to `.tnt/`. `--out <dir>` saves logs, a `summary.json` and a ledger viewer (`view.html`) for CI artifacts.
 
 GitHub Actions example (`pull_request` checks out the merge commit):
 
