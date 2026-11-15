@@ -9,7 +9,9 @@ evidence-gated, subagent-per-step development workflow: TDD red/green, style,
 code review, functional testing and audit. The repo root is a local plugin
 marketplace (`.claude-plugin/marketplace.json`), and the shippable plugin lives in
 `plugins/think-and-type/`. Anything outside that directory (tests, this file, the README)
-does not ship.
+does not ship. `docs/index.html` is the landing page (one self-contained HTML file
+for GitHub Pages, no build step): its gate rules, flow diagrams and guardrails restate
+the README, so update it when those change.
 
 ## Commands
 

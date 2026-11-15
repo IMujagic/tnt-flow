@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Think and Type</title>
+<meta name="description" content="Think and Type (tnt) is an open-source Claude Code plugin: an evidence-gated, subagent-per-step development workflow where every gate is decided from a hash-chained ledger of real command output.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Caveat:wght@500;700&family=JetBrains+Mono:wght@400;600&family=Kalam:wght@400;700&display=swap">
+<style>
+/* Layout: one whiteboard, read top to bottom. Marker colour carries meaning everywhere:
+   blue = you, black = subagents, green = the tnt CLI and its ledger (proof), red = gates. */
+:root {
+  --board: #f6f7f4;
+  --board-2: #ecefea;
+  --grid: #d6dbd3;
+  --ink: #1d2730;
+  --ink-2: #56616b;
+  --you: #1f5fc4;
+  --gate: #cc3a2e;
+  --proof: #1a7d46;
+  --you-wash: #e3ecfa;
+  --gate-wash: #f9e5e2;
+  --proof-wash: #e0f1e6;
+  --note: #fbe68e;
+  --note-ink: #3a3210;
+  --tray: #c4cacd;
+  --tray-2: #a7aeb2;
+  --paper: #ffffff;
+
+  --f-marker: "Kalam", "Comic Sans MS", "Segoe Print", cursive;
+  --f-hand: "Caveat", "Kalam", "Segoe Print", cursive;
+  --f-body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Consolas, "Courier New", monospace;
+
+  --wrap: 1120px;
+  --r-sk: 12px 16px 10px 14px / 14px 10px 16px 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --board: #1a1f22; --board-2: #222a2e; --grid: #2d363a;
+    --ink: #e6eae4; --ink-2: #a2acaf;
+    --you: #82b2ff; --gate: #ff8b7b; --proof: #6fd69b;
+    --you-wash: #1e2b40; --gate-wash: #3b2523; --proof-wash: #1c3327;
+    --note: #574d1f; --note-ink: #f6ebbb;
+    --tray: #3a4246; --tray-2: #2b3236; --paper: #20272a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --board: #1a1f22; --board-2: #222a2e; --grid: #2d363a;
+  --ink: #e6eae4; --ink-2: #a2acaf;
+  --you: #82b2ff; --gate: #ff8b7b; --proof: #6fd69b;
+  --you-wash: #1e2b40; --gate-wash: #3b2523; --proof-wash: #1c3327;
+  --note: #574d1f; --note-ink: #f6ebbb;
+  --tray: #3a4246; --tray-2: #2b3236; --paper: #20272a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+body {
+  background-color: var(--board);
+  background-image: radial-gradient(var(--grid) 1.1px, transparent 1.2px);
+  background-size: 26px 26px;
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: var(--wrap); margin-inline: auto; }
+a { color: var(--you); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 3px dashed var(--you); outline-offset: 3px; border-radius: 6px; }
+h1, h2, h3 { font-family: var(--f-marker); font-weight: 700; line-height: 1.12; text-wrap: balance; margin: 0; }
+h2 { font-size: clamp(1.9rem, 4.2vw, 2.75rem); }
+h3 { font-size: 1.45rem; }
+p { margin: 0; }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+.hand { font-family: var(--f-hand); font-weight: 700; }
+.lede { color: var(--ink-2); max-width: 64ch; }
+
+/* hand-drawn outline: the border lives on a pseudo-element that goes through the wobble filter */
+.sk { position: relative; }
+.sk::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  border: 2.2px solid var(--line, var(--ink));
+  border-radius: var(--r-sk);
+  filter: url(#rough);
+}
+.hl { background: linear-gradient(transparent 58%, var(--hl, var(--note)) 58%, var(--hl, var(--note)) 90%, transparent 90%); padding-inline: 2px; }
+
+/* ---------- header ---------- */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; padding-block: 20px 8px; }
+.logo { display: flex; align-items: baseline; gap: 10px; text-decoration: none; color: var(--ink); }
+.logo b { font-family: var(--f-marker); font-size: 2rem; line-height: 1; }
+.logo span { font-family: var(--f-hand); font-size: 1.35rem; color: var(--ink-2); }
+.nav { display: flex; gap: 6px 18px; flex-wrap: wrap; align-items: center; font-weight: 700; font-size: 0.98rem; }
+.nav a { color: var(--ink); text-decoration: none; }
+.nav a:hover { text-decoration: underline; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; font: 700 1rem var(--f-body);
+  padding: 10px 16px; color: var(--ink); background: var(--paper); text-decoration: none; cursor: pointer; border: 0;
+}
+.btn.primary { background: var(--ink); color: var(--board); }
+.btn.primary::before { --line: var(--ink); }
+.btn svg { width: 18px; height: 18px; flex: none; }
+
+/* ---------- hero ---------- */
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 40px; align-items: center; padding-block: 36px 28px; }
+.eyebrow { display: inline-flex; gap: 8px; align-items: center; font-weight: 700; font-size: 0.9rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--proof); padding: 4px 12px; --line: var(--proof); }
+.hero h1 { font-size: clamp(2.7rem, 6.4vw, 4.7rem); margin-block: 18px 16px; }
+.hero h1 .strike { position: relative; color: var(--ink-2); white-space: nowrap; }
+.hero h1 .strike svg { position: absolute; left: -4%; top: 38%; width: 108%; height: 40%; overflow: visible; }
+.hero .lede { font-size: 1.15rem; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+.sketch { display: grid; gap: 6px; justify-items: center; }
+.claim { background: var(--paper); padding: 18px 22px 14px; max-width: 360px; font-family: var(--f-marker); font-size: 1.3rem; line-height: 1.3; justify-self: start; transform: rotate(-1.5deg); }
+.claim small { display: block; font: 400 0.95rem var(--f-body); color: var(--ink-2); margin-top: 6px; }
+.claim .x { position: absolute; inset: -8px -10px; width: calc(100% + 20px); height: calc(100% + 16px); pointer-events: none; }
+.claim .x path { stroke: var(--gate); stroke-width: 3.2; fill: none; stroke-linecap: round; }
+.tag { position: absolute; font-family: var(--f-hand); font-weight: 700; font-size: 1.5rem; line-height: 1; }
+.claim .tag { right: -12px; top: -26px; color: var(--gate); transform: rotate(6deg); }
+.between { display: flex; align-items: center; gap: 8px; font-family: var(--f-hand); font-size: 1.45rem; font-weight: 700; color: var(--proof); }
+.between svg { width: 34px; height: 54px; }
+.proofcard { --line: var(--proof); background: var(--paper); padding: 16px 18px; font-family: var(--f-mono); font-size: 0.84rem; line-height: 1.7; width: min(100%, 420px); justify-self: end; transform: rotate(0.8deg); }
+.proofcard .k { color: var(--ink-2); display: inline-block; min-width: 4.6em; }
+.proofcard .ok { color: var(--proof); font-weight: 600; }
+.proofcard .tag { left: -14px; bottom: -22px; color: var(--proof); transform: rotate(-5deg); }
+
+/* ---------- marker tray legend ---------- */
+.trayblock { padding-block: 10px 24px; }
+.tray { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 30px; padding: 16px 20px 12px; background: linear-gradient(var(--tray), var(--tray-2)); border-radius: 6px 6px 14px 14px; box-shadow: inset 0 -4px 0 rgba(0,0,0,0.08); }
+.marker { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 0.95rem; }
+.marker i { display: block; width: 74px; height: 16px; border-radius: 4px 8px 8px 4px; background: linear-gradient(90deg, var(--c) 0 22%, var(--paper) 22% 100%); box-shadow: inset 0 0 0 1.5px var(--c); position: relative; }
+.marker i::after { content: ""; position: absolute; left: -9px; top: 4px; width: 10px; height: 8px; border-radius: 3px 0 0 3px; background: var(--c); }
+.traynote { text-align: center; font-family: var(--f-hand); font-size: 1.3rem; color: var(--ink-2); margin-top: 8px; }
+
+/* ---------- sections ---------- */
+section { padding-block: 56px 20px; scroll-margin-top: 12px; }
+.sechead { display: grid; gap: 12px; margin-bottom: 28px; }
+.sechead .kicker { font-family: var(--f-hand); font-size: 1.5rem; font-weight: 700; color: var(--gate); line-height: 1; }
+.panel { background: var(--board-2); padding: clamp(18px, 3vw, 32px); --line: var(--ink-2); }
+
+/* two layers */
+.layers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-bottom: 30px; }
+.layer { padding: 20px 22px; background: var(--paper); display: grid; gap: 8px; align-content: start; }
+.layer h3 { font-size: 1.35rem; }
+.layer.agentl { --line: var(--ink); }
+.layer.cli { --line: var(--proof); }
+.layer ul { margin: 0; padding-left: 1.1em; color: var(--ink-2); }
+.layer li + li { margin-top: 4px; }
+.layer .says { font-family: var(--f-hand); font-size: 1.35rem; font-weight: 700; }
+.layer.cli .says { color: var(--proof); }
+
+/* ---------- flow diagrams ---------- */
+.flow { display: grid; gap: 4px; }
+.row { display: flex; align-items: stretch; gap: 0; }
+.row.rev { flex-direction: row-reverse; }
+.st { flex: 1 1 0; min-width: 0; padding: 12px 13px 12px; display: flex; flex-direction: column; gap: 5px; background: var(--paper); font-size: 0.93rem; line-height: 1.42; }
+.st .who { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.st .who em { font-style: normal; font-weight: 600; letter-spacing: 0.02em; text-transform: none; font-family: var(--f-mono); font-size: 0.95em; opacity: 0.85; }
+.st .t { font-weight: 700; font-size: 1rem; line-height: 1.3; }
+.st .d { color: var(--ink-2); }
+.st code { overflow-wrap: anywhere; }
+.st.you { --line: var(--you); background: var(--you-wash); }
+.st.you .who { color: var(--you); }
+.st.agent { --line: var(--ink); }
+.st.cli { --line: var(--proof); background: var(--proof-wash); }
+.st.cli .who { color: var(--proof); }
+.st.cli::before { border-style: dashed; }
+.st.gate { --line: var(--gate); background: var(--gate-wash); text-align: center; align-items: center; justify-content: center; }
+.st.gate::before { border-radius: 50% 46% 52% 48% / 52% 50% 48% 50%; inset: -3px -2px; }
+.st.gate .who { color: var(--gate); justify-content: center; }
+.st.gate .t { font-family: var(--f-marker); font-size: 1.25rem; }
+.st.done { --line: var(--proof); background: var(--proof-wash); text-align: center; align-items: center; justify-content: center; }
+.st.done::before { border-width: 3px; }
+.st.done .t { font-family: var(--f-marker); font-size: 1.25rem; color: var(--proof); }
+.commit { font-family: var(--f-mono); font-size: 0.74rem; color: var(--proof); font-weight: 600; }
+.arr { flex: none; width: 34px; display: grid; place-items: center; color: var(--ink-2); }
+.arr svg { width: 30px; height: 18px; overflow: visible; }
+.row.rev .arr svg { transform: scaleX(-1); }
+.turn { display: flex; padding-inline: 7%; color: var(--ink-2); }
+.turn.r { justify-content: flex-end; }
+.turn.l { justify-content: flex-start; }
+.turn svg { width: 26px; height: 34px; }
+svg.draw path { fill: none; stroke: currentColor; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+
+.flowcard { display: grid; gap: 18px; padding: clamp(18px, 3vw, 30px); background: var(--board-2); --line: var(--ink-2); }
+.flowcard + .flowcard { margin-top: 30px; }
+.fhead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
+.fhead h3 { font-size: clamp(1.5rem, 3vw, 1.9rem); }
+.cmd { font-family: var(--f-mono); font-size: 0.85rem; background: var(--ink); color: var(--board); padding: 4px 10px; border-radius: 6px; overflow-wrap: anywhere; }
+.fwhen { color: var(--ink-2); max-width: 75ch; }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.note { background: var(--note); color: var(--note-ink); padding: 12px 14px 12px; font-size: 0.93rem; line-height: 1.45; box-shadow: 2px 3px 0 rgba(0,0,0,0.08); border-radius: 2px 2px 10px 2px; }
+.note b { display: block; font-family: var(--f-marker); font-size: 1.1rem; line-height: 1.2; margin-bottom: 2px; }
+.note:nth-child(odd) { transform: rotate(-0.6deg); }
+.note:nth-child(even) { transform: rotate(0.5deg); }
+.note.red { box-shadow: inset 4px 0 0 var(--gate), 2px 3px 0 rgba(0,0,0,0.08); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 30px; }
+.chip { padding: 6px 13px; font-weight: 700; font-size: 0.93rem; text-decoration: none; color: var(--ink); background: var(--paper); --line: var(--ink-2); }
+.chip:hover { background: var(--note); color: var(--note-ink); }
+
+.specsnip { font-family: var(--f-mono); font-size: 0.82rem; line-height: 1.65; background: var(--paper); padding: 14px 16px; overflow-x: auto; white-space: pre; --line: var(--you); }
+.specsnip .c { color: var(--ink-2); }
+.specsnip .e { color: var(--proof); font-weight: 600; }
+
+/* ---------- gates list ---------- */
+.gates { display: grid; gap: 14px; counter-reset: g; }
+.gaterow { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(0, 0.55fr); gap: 18px; align-items: center; padding: 14px 18px; background: var(--paper); --line: var(--ink-2); }
+.gname { font-family: var(--f-marker); font-size: 1.4rem; font-weight: 700; color: var(--gate); display: flex; align-items: center; gap: 10px; }
+.gname::before { counter-increment: g; content: counter(g); font: 700 0.8rem var(--f-body); color: var(--gate); width: 26px; height: 26px; border: 2px solid var(--gate); border-radius: 50%; display: grid; place-items: center; flex: none; }
+.grule { font-size: 0.97rem; }
+.gby { font-size: 0.88rem; color: var(--ink-2); }
+.gby b { color: var(--ink); }
+.gby .commit { display: block; margin-top: 2px; }
+
+/* ---------- ledger demo ---------- */
+.ledgergrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 26px; align-items: start; }
+.chain { display: grid; gap: 0; }
+.entry { background: var(--paper); padding: 10px 14px; font-family: var(--f-mono); font-size: 0.8rem; line-height: 1.55; --line: var(--proof); transition: background 0.25s; }
+.entry .h1 { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.entry .seq { font-weight: 600; color: var(--ink); }
+.entry .type { font-weight: 600; color: var(--proof); }
+.entry .f { color: var(--ink-2); overflow-wrap: anywhere; }
+.entry .f b { color: var(--ink); font-weight: 600; }
+.entry .hashes { display: flex; gap: 4px 16px; flex-wrap: wrap; color: var(--ink-2); font-size: 0.76rem; }
+.entry .hashes span b { font-weight: 600; }
+.entry.bad { --line: var(--gate); background: var(--gate-wash); }
+.entry.edited .f b.changed { color: var(--gate); background: var(--gate-wash); outline: 1.5px dashed var(--gate); outline-offset: 1px; }
+.entry .bad-h { color: var(--gate); font-weight: 600; }
+.link { height: 22px; display: flex; align-items: center; gap: 8px; padding-left: 22px; font-family: var(--f-hand); font-size: 1.15rem; font-weight: 700; color: var(--proof); }
+.link::before { content: ""; width: 2.5px; height: 100%; background: currentColor; border-radius: 2px; }
+.link.broken { color: var(--gate); }
+.link.broken::before { background: repeating-linear-gradient(currentColor 0 4px, transparent 4px 8px); }
+.ctrl { display: grid; gap: 16px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+.steps3 { display: grid; gap: 10px; }
+.steps3 button { text-align: left; justify-content: flex-start; width: 100%; line-height: 1.35; }
+.steps3 button[disabled] { opacity: 0.45; cursor: not-allowed; }
+.steps3 button .n { font-family: var(--f-marker); color: var(--gate); font-size: 1.15rem; width: 1.3em; flex: none; }
+.term { background: #11161a; color: #dfe6e1; font-family: var(--f-mono); font-size: 0.8rem; line-height: 1.6; padding: 14px 16px; border-radius: 10px; min-height: 120px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.term .p { color: #8fd3a8; }
+.term .err { color: #ff9a8c; }
+.term .okc { color: #8fd3a8; }
+.explain { font-size: 0.97rem; }
+
+/* tree binding demo */
+.treebar { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 18px 14px; }
+.tg { padding: 8px 12px; background: var(--paper); font-size: 0.85rem; min-width: 112px; display: grid; gap: 2px; --line: var(--proof); }
+.tg b { font-family: var(--f-marker); font-size: 1.1rem; }
+.tg span { font-family: var(--f-mono); font-size: 0.74rem; color: var(--ink-2); }
+.tg.stale { --line: var(--gate); background: var(--gate-wash); }
+.tg.stale b { text-decoration: line-through; text-decoration-color: var(--gate); text-decoration-thickness: 2px; }
+.treenow { font-family: var(--f-mono); font-size: 0.85rem; }
+.treenow b { color: var(--proof); }
+.treenow.changed b { color: var(--gate); }
+.treemsg { margin-top: 10px; min-height: 1.6em; color: var(--ink-2); font-size: 0.95rem; }
+.treemsg.warn { color: var(--gate); font-weight: 700; }
+
+/* ---------- guardrails / toolbox ---------- */
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.tool { background: var(--paper); padding: 16px; display: grid; gap: 6px; align-content: start; --line: var(--ink-2); }
+.tool code { color: var(--proof); font-weight: 600; font-size: 0.9rem; }
+.tool p { color: var(--ink-2); font-size: 0.93rem; }
+.limits { margin-top: 22px; padding: 16px 20px; --line: var(--gate); background: var(--paper); }
+.limits p { max-width: 80ch; }
+
+/* ---------- install / footer ---------- */
+.install { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 30px; align-items: start; }
+.cmdbox { display: grid; gap: 10px; }
+.cmdline { display: flex; align-items: stretch; background: #11161a; color: #dfe6e1; border-radius: 10px; overflow: hidden; }
+.cmdline code { flex: 1; min-width: 0; padding: 11px 14px; font-size: 0.82rem; overflow-x: auto; white-space: nowrap; }
+.cmdline code::before { content: "$ "; color: #8fd3a8; }
+.copy { flex: none; border: 0; background: #263038; color: #dfe6e1; font: 700 0.8rem var(--f-body); padding: 0 14px; cursor: pointer; }
+.copy:hover { background: #33404a; }
+.reqs { color: var(--ink-2); font-size: 0.95rem; }
+.ghcard { padding: 22px; background: var(--paper); display: grid; gap: 12px; --line: var(--ink); }
+.ghcard .big { font-family: var(--f-marker); font-size: 1.6rem; line-height: 1.2; }
+.ghcard .url { font-family: var(--f-mono); font-size: 0.9rem; overflow-wrap: anywhere; }
+footer { padding-block: 40px 48px; color: var(--ink-2); font-size: 0.92rem; display: flex; justify-content: space-between; gap: 10px 24px; flex-wrap: wrap; border-top: 2px dashed var(--grid); margin-top: 48px; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 920px) {
+  .hero, .ledgergrid, .install { grid-template-columns: minmax(0, 1fr); }
+  .ctrl { position: static; }
+  .grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gaterow { grid-template-columns: 130px minmax(0, 1fr); }
+  .gby { grid-column: 2; }
+}
+@media (max-width: 760px) {
+  .row, .row.rev { flex-direction: column; }
+  .arr { width: auto; height: 30px; }
+  .arr svg, .row.rev .arr svg { transform: rotate(90deg); }
+  .turn, .turn.r, .turn.l { justify-content: center; padding: 0; height: 30px; align-items: center; }
+  .turn svg { display: none; }
+  .turn::after { content: ""; width: 2.5px; height: 22px; background: var(--ink-2); border-radius: 2px; }
+  .layers { grid-template-columns: minmax(0, 1fr); }
+  .claim { max-width: 100%; }
+}
+@media (max-width: 560px) {
+  .grid3, .grid4 { grid-template-columns: minmax(0, 1fr); }
+  .gaterow { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .gby { grid-column: auto; }
+  .top { padding-block: 14px 4px; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <filter id="rough" x="-5%" y="-5%" width="110%" height="110%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.022" numOctaves="2" seed="7" result="n"/>
+    <feDisplacementMap in="SourceGraphic" in2="n" scale="3.2" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
+
+<div class="wrap">
+
+<header class="top">
+  <a class="logo" href="#top" id="top"><b>tnt</b><span>think and type</span></a>
+  <nav class="nav" aria-label="Sections">
+    <a href="#concept">Concept</a>
+    <a href="#ledger">Ledger</a>
+    <a href="#gates">Gates</a>
+    <a href="#flows">Flows</a>
+    <a href="#install">Install</a>
+    <a class="btn sk" href="https://github.com/IMujagic/tnt-flow" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </nav>
+</header>
+
+<!-- ======================= HERO ======================= -->
+<div class="hero">
+  <div>
+    <span class="eyebrow sk">Open-source Claude Code plugin</span>
+    <h1>Proof, not <span class="strike">claims<svg viewBox="0 0 100 20" preserveAspectRatio="none" class="draw" aria-hidden="true"><path d="M2 12 C 30 4, 55 16, 98 6" style="stroke:var(--gate);stroke-width:4"/></svg></span>.</h1>
+    <p class="lede">Think and Type (<code>tnt</code>) runs your feature work through independent subagents: one writes failing tests, another makes them pass, others review, test the running system and audit. A step only counts when the <span class="hl">tnt CLI has recorded real command output</span> in a hash-chained ledger, bound to the exact code it ran against.</p>
+    <div class="cta">
+      <a class="btn primary sk" href="#install">Install the plugin</a>
+      <a class="btn sk" href="https://github.com/IMujagic/tnt-flow" target="_blank" rel="noopener">Read the source on GitHub</a>
+    </div>
+  </div>
+
+  <div class="sketch" aria-label="An agent's claim is crossed out; the gate reads a recorded ledger entry instead">
+    <div class="claim sk">
+      “Done. All 14 tests pass, the feature works.”
+      <small>an agent's final message</small>
+      <svg class="x" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d="M4 8 C 30 35, 70 70, 96 94"/><path d="M95 6 C 70 32, 34 66, 5 93"/></svg>
+      <span class="tag">a claim</span>
+    </div>
+    <div class="between">
+      <svg class="draw" viewBox="0 0 34 54" aria-hidden="true"><path d="M17 3 C 13 18, 21 30, 17 46"/><path d="M9 38 L17 49 L25 38"/></svg>
+      the gate reads this instead
+    </div>
+    <div class="proofcard sk">
+      <div><span class="k">#17</span><span class="ok">run</span> step=green</div>
+      <div><span class="k">cmd</span>npm test</div>
+      <div><span class="k">exit</span><span class="ok">0</span> (log 017-green.log)</div>
+      <div><span class="k">tree</span>8c21e4d9f0</div>
+      <div><span class="k">prev</span>9b04e1aa52 <span class="k" style="min-width:auto">hash</span> c51e7730bd</div>
+      <span class="tag">evidence</span>
+    </div>
+  </div>
+</div>
+
+<div class="trayblock">
+  <div class="tray" role="list" aria-label="Marker colour key">
+    <span class="marker" role="listitem" style="--c:var(--you)"><i></i>You</span>
+    <span class="marker" role="listitem" style="--c:var(--ink)"><i></i>Subagents</span>
+    <span class="marker" role="listitem" style="--c:var(--proof)"><i></i>tnt CLI and ledger</span>
+    <span class="marker" role="listitem" style="--c:var(--gate)"><i></i>Gates</span>
+  </div>
+  <p class="traynote">Every diagram on this board uses the same four markers.</p>
+</div>
+
+<!-- ======================= CONCEPT ======================= -->
+<section id="concept">
+  <div class="sechead">
+    <span class="kicker">the concept</span>
+    <h2>Agents do the work. The CLI decides whether it counted.</h2>
+    <p class="lede">tnt has two layers that never swap roles. Subagents write tests, code, reviews and probes. A small deterministic Node CLI, with no dependencies, runs the commands, records what happened and decides every gate. No agent's description of its own work is ever read as evidence.</p>
+  </div>
+
+  <div class="layers">
+    <div class="layer agentl sk">
+      <span class="says">who does what</span>
+      <h3>The agent layer</h3>
+      <ul>
+        <li>Skills such as <code>/tnt:develop</code> run in your session and spawn one fresh subagent per step.</li>
+        <li>Producers: test-author, implementer, planner, architect, scaffolder, codebase-analyst, claims-analyst.</li>
+        <li>Verifiers that can't edit code: code-reviewer, functional-tester, evidence-auditor.</li>
+        <li>Subagents can only dry-run a gate with <code>tnt check</code>. Only the orchestrator runs <code>tnt gate</code>.</li>
+      </ul>
+    </div>
+    <div class="layer cli sk">
+      <span class="says">whether it passed</span>
+      <h3>The deterministic harness</h3>
+      <ul>
+        <li>Runs the configured test and style commands itself, so nobody can "prove" a step with <code>true</code>.</li>
+        <li>Hashes the working tree before and after each run. A command that changed the code is rejected as evidence.</li>
+        <li>Appends every run, approval, review and gate decision to a hash-chained ledger.</li>
+        <li>Decides each gate from that ledger and auto-commits at red, green and done.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="flowcard sk">
+    <div class="fhead"><h3>How one step becomes evidence</h3><span class="cmd">tnt run F-7KQ2MX green</span></div>
+    <div class="flow" id="flow-step"></div>
+  </div>
+</section>
+
+<!-- ======================= LEDGER ======================= -->
+<section id="ledger">
+  <div class="sechead">
+    <span class="kicker">the core</span>
+    <h2>The ledger is the proof. Try to fake it.</h2>
+    <p class="lede">Each feature has its own <code>ledger.jsonl</code>. Every entry stores the hash of the entry before it (<code>prev</code>) and a sha256 of its own content (<code>hash</code>). Edit any entry and verification points at it. Re-hash it to cover up, and the next entry no longer links. This chain is computed live in your browser with the same rules the CLI uses.</p>
+  </div>
+
+  <div class="ledgergrid">
+    <div class="chain" id="chain" aria-live="polite"></div>
+    <div class="ctrl">
+      <div class="panel sk">
+        <h3 style="margin-bottom:12px">Rewrite history</h3>
+        <div class="steps3">
+          <button class="btn sk" id="tamper"><span class="n">1</span><span>Edit entry #6 so the implementer's failed attempt shows <code>exit 0</code></span></button>
+          <button class="btn sk" id="rehash" disabled><span class="n">2</span><span>Re-hash #6 so its content matches again</span></button>
+          <button class="btn sk" id="reset"><span class="n">↺</span><span>Reset the ledger</span></button>
+        </div>
+      </div>
+      <div class="term" id="term" role="status"></div>
+      <p class="explain" id="explain"></p>
+    </div>
+  </div>
+
+  <div class="flowcard sk" style="margin-top:34px">
+    <div class="fhead"><h3>Evidence is bound to code, not to commits</h3><span class="cmd">treeHash()</span></div>
+    <p class="fwhen">Each run records a content hash of the working tree, computed through a temporary git index that honours <code>.gitignore</code> and leaves out <code>.tnt/</code>. Every gate after green must be proven on the green tree, so changing one line of code after green makes the later evidence stale.</p>
+    <div class="treenow" id="treenow">current tree <b>8c21e4d9f0</b></div>
+    <div class="treebar" id="treebar"></div>
+    <div class="cta" style="margin-top:4px">
+      <button class="btn sk" id="editcode">Edit app.mjs after green</button>
+      <button class="btn sk" id="regreen">Re-run green on the new tree</button>
+      <button class="btn sk" id="treereset">Reset</button>
+    </div>
+    <p class="treemsg" id="treemsg"></p>
+  </div>
+</section>
+
+<!-- ======================= GATES ======================= -->
+<section id="gates">
+  <div class="sechead">
+    <span class="kicker">seven gates</span>
+    <h2>Each gate passes only on what the ledger shows</h2>
+    <p class="lede">Gates run in this order. Passing one clears every later gate, so evidence is always rebuilt on top of the latest proven state. A failing gate prints the failing lines of each run it cites, so the next step starts from the failure instead of reading whole logs.</p>
+  </div>
+  <div class="gates">
+    <div class="gaterow sk"><div class="gname">spec</div><div class="grule">A human approved the exact <code>spec.md</code> (its hash is recorded). Every AC is concrete and has an <code>Expect:</code> pattern that doesn't also match generic output.</div><div class="gby"><b>You</b> approve, with a permission prompt</div></div>
+    <div class="gaterow sk"><div class="gname">red</div><div class="grule">Test files are locked by hash, every <code>AC-n</code> is named by a test (<code>AC-1</code>, <code>test_ac_1_…</code>, <code>TestAC1…</code>), and the configured full suite failed with an AC id in the output.</div><div class="gby"><b>test-author</b><span class="commit">commit [tnt:red]</span></div></div>
+    <div class="gaterow sk"><div class="gname">green</div><div class="grule">The full suite passed after red, the locked tests are byte-identical, and the code differs from the red tree (otherwise the suite is flaky).</div><div class="gby"><b>implementer</b><span class="commit">commit [tnt:green]</span></div></div>
+    <div class="gaterow sk"><div class="gname">style</div><div class="grule">Every configured lint, format-check and type-check command exited 0 on the green tree.</div><div class="gby"><b>tnt CLI</b> runs them; an agent only fixes failures</div></div>
+    <div class="gaterow sk"><div class="gname">review</div><div class="grule">An independent review approved the green tree. Every finding quotes real code at <code>file:line</code> and every changed file was reviewed. An optional second reviewer from another model or vendor must approve too.</div><div class="gby"><b>code-reviewer</b> (+ external)</div></div>
+    <div class="gaterow sk"><div class="gname">functional</div><div class="grule">Each AC has a black-box run on the green tree whose output matched its <code>--expect</code> pattern, and some run printed every <code>Expect:</code> pattern the spec gives for that AC.</div><div class="gby"><b>functional-tester</b></div></div>
+    <div class="gaterow sk"><div class="gname">audit</div><div class="grule"><code>tnt verify</code> re-executed the tests, style checks and functional runs from scratch, the hash chain is intact, and a fresh auditor's report passed.</div><div class="gby"><b>evidence-auditor</b><span class="commit">commit [tnt:done]</span></div></div>
+  </div>
+</section>
+
+<!-- ======================= FLOWS ======================= -->
+<section id="flows">
+  <div class="sechead">
+    <span class="kicker">every way in</span>
+    <h2>The flows, one board each</h2>
+    <p class="lede">Each flow is a skill you start from Claude Code. Your session orchestrates, a fresh subagent does each step, and the CLI records and decides. Blue boxes wait for you.</p>
+  </div>
+  <nav class="chips" id="chips" aria-label="Flows"></nav>
+  <div id="flowboards"></div>
+</section>
+
+<!-- ======================= GUARDRAILS ======================= -->
+<section id="guardrails">
+  <div class="sechead">
+    <span class="kicker">guardrails</span>
+    <h2>What the agents can't do</h2>
+    <p class="lede">A <code>PreToolUse</code> guard hook checks every tool call a subagent makes. It works alongside the ledger: the hook stops the obvious shortcuts, and the hashes catch anything that gets past it.</p>
+  </div>
+  <div class="grid3">
+    <div class="note"><b>Decide a gate</b>Subagents can't run <code>gate</code>, <code>approve</code>, <code>waive</code>, <code>unlock</code>, <code>sync</code>, <code>start</code> or <code>init</code>, and can't import the harness modules directly.</div>
+    <div class="note"><b>Touch the evidence</b>Only the CLI writes <code>state.json</code>, ledgers, logs, <code>evidence/</code> and <code>report.md</code>. Direct writes are blocked.</div>
+    <div class="note"><b>Edit locked tests</b>After red, the locked test files can't be edited, checked out, restored, stashed or reset. Changing them needs a recorded <code>unlock</code> with a reason.</div>
+    <div class="note"><b>Act in your name</b><code>approve</code>, <code>waive</code>, <code>unlock</code> and <code>sync --relock</code> open a permission prompt, even in auto mode. In <code>claude -p</code> they are refused.</div>
+    <div class="note"><b>Verify their own way</b>Verifiers are read-only, apart from their own draft files. Red, green and style always run the commands in <code>.tnt/config.json</code>.</div>
+    <div class="note"><b>Rewrite git history</b>Subagents can't commit, merge, rebase, reset, stash, check out, restore, push or delete branches.</div>
+  </div>
+  <div class="limits sk">
+    <p><b>Where this stops.</b> The guard hook reads commands as text, so a determined agent could hide a write from it, for example inside a decoded script. Treat it as one layer of defence, not a security boundary. Locked-test hashes and tree binding catch the result at the next gate, and <code>tnt verify</code> re-executes the evidence instead of trusting recorded results. The proof is <code>report.md</code> and <code>tnt verify</code> together, not either one alone.</p>
+  </div>
+</section>
+
+<!-- ======================= TOOLBOX ======================= -->
+<section id="toolbox">
+  <div class="sechead">
+    <span class="kicker">any time</span>
+    <h2>See where things stand</h2>
+  </div>
+  <div class="grid4">
+    <div class="tool sk"><code>/tnt:status</code><p>Gates, attempts, waivers, unlocks and ledger integrity for every feature and review.</p></div>
+    <div class="tool sk"><code>/tnt:verify F-…</code><p>Re-executes tests, style and functional evidence from scratch, then a fresh auditor judges it. Use it before a merge or a release.</p></div>
+    <div class="tool sk"><code>tnt view --open</code><p>One self-contained HTML page: the ledger as a timeline, with logs, findings and the code diff between recorded trees.</p></div>
+    <div class="tool sk"><code>tnt usage</code><p>Tokens per feature and per subagent, recorded by a <code>SubagentStop</code> hook. Statistics only, never evidence.</p></div>
+  </div>
+</section>
+
+<!-- ======================= INSTALL ======================= -->
+<section id="install">
+  <div class="sechead">
+    <span class="kicker">open source</span>
+    <h2>Install it in two commands</h2>
+  </div>
+  <div class="install">
+    <div class="cmdbox">
+      <p class="reqs">Clone the repository, then from its root:</p>
+      <div class="cmdline"><code>git clone https://github.com/IMujagic/tnt-flow.git &amp;&amp; cd tnt-flow</code><button class="copy" type="button">Copy</button></div>
+      <div class="cmdline"><code>claude plugin marketplace add .</code><button class="copy" type="button">Copy</button></div>
+      <div class="cmdline"><code>claude plugin install tnt@think-and-type</code><button class="copy" type="button">Copy</button></div>
+      <p class="reqs">Then, in any git repository: <code>/tnt:onboard</code> for an existing codebase or <code>/tnt:new-project</code> for a new one. Commands are <code>/tnt:&lt;skill&gt;</code> and agents are <code>tnt:&lt;agent&gt;</code>.</p>
+      <p class="reqs">Requires a recent Claude Code, Node.js 18 or later, and git. The CLI has zero dependencies.</p>
+    </div>
+    <div class="ghcard sk">
+      <span class="big">tnt is an open-source Claude Code plugin.</span>
+      <p>The harness, the guard hook, every agent prompt and the test suite are in one repository, MIT licensed. Read how a gate decides before you trust it, open an issue, or send a pull request.</p>
+      <span class="url">github.com/IMujagic/tnt-flow</span>
+      <div class="cta" style="margin-top:4px">
+        <a class="btn primary sk" href="https://github.com/IMujagic/tnt-flow" target="_blank" rel="noopener">Open on GitHub</a>
+        <a class="btn sk" href="https://github.com/IMujagic/tnt-flow#readme" target="_blank" rel="noopener">Read the README</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>Think and Type (<code>tnt</code>), an evidence-gated workflow for Claude Code.</span>
+  <a href="https://github.com/IMujagic/tnt-flow" target="_blank" rel="noopener">github.com/IMujagic/tnt-flow</a>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  // ------------------------------------------------------------ flow renderer
+  var ARROW = '<svg class="draw" viewBox="0 0 30 18" aria-hidden="true"><path d="M2 10 C 9 7, 17 12, 26 9"/><path d="M20 3 L27 9 L20 15"/></svg>';
+  var TURN = '<svg class="draw" viewBox="0 0 26 34" aria-hidden="true"><path d="M13 2 C 15 12, 11 20, 13 29"/><path d="M7 23 L13 31 L19 23"/></svg>';
+  var WHO = { you: 'You', agent: 'Subagent', cli: 'tnt CLI', gate: 'Gate', done: 'Done', check: 'Check' };
+
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  // `x` in text becomes <code>x</code>
+  function fmt(s) { return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>'); }
+
+  function step(s) {
+    var kind = s.k === 'check' ? 'gate' : s.k;
+    var who = '<span class="who">' + (s.label || WHO[s.k]) + (s.m ? ' <em>' + esc(s.m) + '</em>' : '') + '</span>';
+    return '<div class="st sk ' + kind + '">' + who + '<span class="t">' + fmt(s.t) + '</span>' +
+      (s.d ? '<span class="d">' + fmt(s.d) + '</span>' : '') +
+      (s.c ? '<span class="commit">' + esc(s.c) + '</span>' : '') + '</div>';
+  }
+  function renderFlow(el, rows) {
+    var html = '';
+    rows.forEach(function (row, i) {
+      if (i > 0) html += '<div class="turn ' + (i % 2 ? 'r' : 'l') + '">' + TURN + '</div>';
+      html += '<div class="row' + (i % 2 ? ' rev' : '') + '">' + row.map(step).join('<div class="arr">' + ARROW + '</div>') + '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  renderFlow(document.getElementById('flow-step'), [[
+    { k: 'agent', t: 'A subagent finishes its step', d: 'and asks the CLI to record it, for example `tnt run <F> green`' },
+    { k: 'cli', t: 'Runs the configured command', d: 'from `.tnt/config.json`, never one the agent supplies' },
+    { k: 'cli', t: 'Writes the log, hashes the tree', d: 'before and after; a run that changed code is `mutated` and rejected' },
+    { k: 'cli', t: 'Appends a ledger entry', d: 'exit code, log sha256, tree hash, `prev` and its own `hash`' },
+    { k: 'gate', t: 'tnt gate', d: 'the orchestrator asks; the evaluator reads only the ledger', c: 'pass → commit, clear later gates' }
+  ]]);
+
+  // ------------------------------------------------------------ the flows
+  var FLOWS = [
+    {
+      id: 'onboard', title: 'Adopt tnt in an existing repository', cmd: '/tnt:onboard',
+      when: 'For a codebase that already exists. tnt learns how the project builds, tests and lints, proves each command actually works, and records a baseline before any feature starts.',
+      rows: [[
+        { k: 'you', t: 'Start onboarding', d: 'in a git repository' },
+        { k: 'cli', t: '`tnt init --type existing`', d: 'creates `.tnt/` and the project ledger' },
+        { k: 'agent', m: 'sonnet', label: 'codebase-analyst', t: 'Maps the stack and conventions', d: 'runs each build, test, lint, format and type-check command to prove it, drafts `project.md` and `config.json`' },
+        { k: 'cli', t: '`tnt config check`', d: 'validates every configured command' },
+        { k: 'cli', t: '`tnt baseline`', d: 'records test and style on the current tree in `_project/ledger.jsonl`' },
+        { k: 'you', t: 'Review and commit `.tnt/`', d: 'it is the audit trail, so it lives in git' }
+      ]],
+      notes: [
+        { b: 'Why a baseline', t: 'It records how the suite and style checks behave before tnt touches anything, so a later failure can be told apart from one that was already there.' },
+        { b: 'Next', t: 'Plan your first feature with `/tnt:plan`.' }
+      ]
+    },
+    {
+      id: 'new-project', title: 'Start a new project', cmd: '/tnt:new-project <idea>',
+      when: 'For a greenfield idea. You brief, an architect designs, you approve, and a scaffolder builds a walking skeleton with a toolchain that is proven before the first feature.',
+      rows: [[
+        { k: 'you', t: 'Brief', d: 'the problem, primary users, what "first release done" means, constraints and non-goals' },
+        { k: 'agent', m: 'inherit', label: 'architect', t: 'Writes `.tnt/project.md`', d: 'architecture, stack, decisions with trade-offs, toolchain, a walking-skeleton slice and an initial backlog' },
+        { k: 'you', t: 'Approve the design', d: 'or send it back with objections' },
+        { k: 'agent', m: 'sonnet', label: 'scaffolder', t: 'Builds the skeleton', d: 'test runner, linter, formatter, type checker, `.gitignore` and one smoke test' }
+      ], [
+        { k: 'cli', t: '`tnt config check` and `tnt baseline`', d: 'every command must exit 0 and none may change the code' },
+        { k: 'you', t: 'Seed the backlog', d: 'each backlog item becomes a feature through `/tnt:plan`' }
+      ]],
+      notes: [
+        { b: 'Proven toolchain', t: 'A baseline that shows a command as `MUTATED`, such as a formatter that rewrites files during a check, fails the scaffold. Gates later depend on those commands being read-only.' }
+      ]
+    },
+    {
+      id: 'plan', title: 'Plan a feature as a testable spec', cmd: '/tnt:plan <request>',
+      when: 'Every feature starts as a spec with acceptance criteria (AC ids) and a functional verification plan. The spec is the contract every later gate is checked against, and you sign it.',
+      rows: [[
+        { k: 'you', t: 'Describe the change', d: 'a feature, a change or a bug with reproduction steps' },
+        { k: 'agent', m: 'inherit', label: 'planner', t: 'Slices it into features', d: 'each with a `spec.md`: ACs, out of scope, open questions, and an `Expect:` pattern per AC' },
+        { k: 'agent', label: 'orchestrator', t: 'Reviews each spec', d: 'is every AC observable, with negative and edge cases? Re-briefs the planner once if not' },
+        { k: 'you', t: 'Approve', d: '`tnt approve <F> --by "<you>"`, confirmed in a permission prompt' },
+        { k: 'gate', t: 'spec', d: 'the spec hash is recorded; any later edit needs a new approval' }
+      ]],
+      spec: true,
+      notes: [
+        { b: 'Full or light', t: 'For a small, low-risk change you can approve with `--profile light`. The choice is recorded with the approval and shown in the report.' },
+        { b: 'Re-approval', t: 'Editing an approved spec resets the feature to `spec`. Re-approving a changed spec drops the old test locks, so tests are locked again for the new ACs.' }
+      ]
+    },
+    {
+      id: 'develop', title: 'Build a feature: the full pipeline', cmd: '/tnt:develop F-7KQ2MX',
+      when: 'The main flow. Your session is the orchestrator: it loops on the feature\'s phase, spawns one fresh subagent per step, and runs `tnt gate` itself after each one. It is resumable at any point.',
+      rows: [[
+        { k: 'cli', t: '`tnt start`', d: 'records the base commit and creates the branch `tnt/F-7KQ2MX-…`' },
+        { k: 'agent', m: 'sonnet', label: 'test-author', t: 'Writes failing tests', d: 'named after each AC, locks them, records `tnt run <F> red`' },
+        { k: 'gate', t: 'red', d: 'locked, every AC named, suite failed', c: 'commit [tnt:red]' },
+        { k: 'agent', m: 'sonnet', label: 'implementer', t: 'Makes them pass', d: 'the simplest code, then refactors with the suite green' },
+        { k: 'gate', t: 'green', d: 'suite passes, locked tests unchanged', c: 'commit [tnt:green]' }
+      ], [
+        { k: 'cli', t: 'Style commands', d: 'the orchestrator runs lint, format-check and type-check itself' },
+        { k: 'gate', t: 'style', d: 'all exited 0 on the green tree' },
+        { k: 'agent', m: 'inherit', label: 'code-reviewer', t: 'Reviews the diff', d: 'against spec, tests and conventions; findings quote real code. Optional external reviewer too' },
+        { k: 'gate', t: 'review', d: 'every finding verified, every changed file covered' }
+      ], [
+        { k: 'agent', m: 'sonnet', label: 'functional-tester', t: 'Exercises the running system', d: 'CLI, HTTP, browser or library entry point per AC, never the unit tests' },
+        { k: 'gate', t: 'functional', d: 'output matched `--expect` and the spec\'s `Expect:`' },
+        { k: 'agent', m: 'inherit', label: 'evidence-auditor', t: 'Re-executes everything', d: '`tnt verify`, ledger integrity, and a judgement of whether the evidence proves the spec' },
+        { k: 'gate', t: 'audit', d: 'verify passed, report accepted', c: 'commit [tnt:done]' },
+        { k: 'done', t: 'report.md', d: 'and `tnt view` for the timeline' }
+      ]],
+      notes: [
+        { b: 'One gate decision per step', t: 'Subagents self-check with `tnt check`, a dry run that records nothing. Only the orchestrator runs `tnt gate`, so attempts and auto-commits stay one per step.' },
+        { b: 'Models by role', t: 'Judgement steps inherit your session model. Scoped producers use Sonnet, and are respawned with Opus once a gate has failed twice.' },
+        { b: 'Red lands before green', t: 'In git history the `[tnt:red]` commit with the failing tests always comes before `[tnt:green]`.' }
+      ]
+    },
+    {
+      id: 'light', title: 'Build a small change: the light profile', cmd: 'tnt approve <F> --profile light',
+      when: 'For bug fixes and small, low-risk changes: about one or two ACs in one module, with no security, data or public-API impact. It keeps TDD and the re-execution audit, and skips the review, functional and auditor agents.',
+      rows: [[
+        { k: 'you', t: 'Approve with `--profile light`', d: 'no `Expect:` patterns needed' },
+        { k: 'agent', m: 'sonnet', label: 'test-author', t: 'Failing tests', d: 'locked, run red' },
+        { k: 'gate', t: 'red', c: 'commit [tnt:red]' },
+        { k: 'agent', m: 'sonnet', label: 'implementer', t: 'Makes them pass', d: 'run green' },
+        { k: 'gate', t: 'green', c: 'commit [tnt:green]' }
+      ], [
+        { k: 'cli', t: 'Style commands', d: 'run by the orchestrator' },
+        { k: 'gate', t: 'style' },
+        { k: 'cli', t: '`tnt verify`', d: 're-runs the suite and style checks from scratch' },
+        { k: 'gate', t: 'audit', d: 'no auditor report needed', c: 'commit [tnt:done]' },
+        { k: 'done', t: 'report.md', d: 'marked as the light profile' }
+      ]],
+      notes: [
+        { b: '2 agents instead of 5', t: 'Both are Sonnet producers. The gates still decide from recorded evidence, so a cheaper path never lowers the bar for what passes.' }
+      ]
+    },
+    {
+      id: 'failures', title: 'When a gate fails', cmd: 'routed by /tnt:develop',
+      when: 'A failing gate never ends in a debate. The gate output names the runs it cites and includes their failing lines. The orchestrator routes the failure to the step that owns it, and fixed code is always proven again from green.',
+      rows: [[
+        { k: 'gate', t: 'FAIL', d: 'with reasons and the failing lines of each cited run' },
+        { k: 'agent', label: 'orchestrator', t: 'Routes the failure', d: 'to the step that owns it, with the gate output verbatim' },
+        { k: 'agent', label: 'owning step', t: 'Fixes it', d: 'a defect gets a failing regression test first' },
+        { k: 'gate', t: 'green again', d: 'code changed, so the later gates are reset' },
+        { k: 'cli', t: 'Pipeline resumes', d: 'style, review, functional and audit are proven on the new tree' }
+      ]],
+      notes: [
+        { b: 'red or green fails', t: 'Re-brief test-author or implementer. If a locked test contradicts the spec, you decide: fix and re-approve the spec, or `unlock` with a reason.', red: true },
+        { b: 'style fails', t: 'The implementer fixes violations in files this feature changed, and reports pre-existing ones instead of fixing them.', red: true },
+        { b: 'review requests changes', t: 'Missing coverage goes to `unlock`, then test-author, then implementer. Everything else goes to implementer. The next review always comes from a new reviewer.', red: true },
+        { b: 'functional fails', t: 'A defect goes to `unlock` and a regression test. A missing environment stops and tells you. A spec gap goes back to you to edit and re-approve.', red: true },
+        { b: 'Bounded attempts', t: 'Each gate allows `limits.maxIterations` attempts (3 by default), then escalates to you. `tnt waive` is a human-only escape hatch, flagged in every report.', red: true }
+      ]
+    },
+    {
+      id: 'team', title: 'Work as a team: branches and CI', cmd: 'tnt sync · tnt verify --integrated',
+      when: 'The layout is built so git merges don\'t conflict: one ledger per feature, one owner per feature, and local state stays out of git. Proof is carried across the base branch moving on and across the final merge.',
+      rows: [[
+        { k: 'cli', t: 'One branch, one ledger', d: 'each feature appends to its own chain, so two features never touch the same file' },
+        { k: 'you', t: 'Agree to merge the base', d: 'once green passes, the orchestrator asks before merging the base branch in' },
+        { k: 'cli', t: '`tnt sync <F>`', d: 'records the new base; the review diff now starts there' },
+        { k: 'gate', t: 'green re-proven', d: 'if the merge changed the code. A changed locked test needs a human `--relock`' }
+      ], [
+        { k: 'you', t: 'Open the pull request', d: 'with `.tnt/` committed' },
+        { k: 'cli', t: 'CI: `tnt verify --integrated`', d: 're-runs every done feature\'s tests, style and functional checks on the merge commit, and records nothing' },
+        { k: 'done', t: 'Merge with proof', d: 'logs, `summary.json` and a viewer saved as CI artifacts' }
+      ]],
+      notes: [
+        { b: 'Why CI re-proves', t: 'The evidence on a branch is bound to that branch\'s tree. Nobody ran the merge commit, so CI does, and fails if a feature in the tree isn\'t done.' }
+      ]
+    },
+    {
+      id: 'review', title: 'Review someone else\'s pull request', cmd: '/tnt:review-non-tnt-feature 482',
+      when: 'For a change built without tnt, such as a colleague\'s PR. Its claims become a checkable spec, then every check runs with your config on the change merged into its base, in a throwaway worktree. It never modifies, commits or pushes the change.',
+      rows: [[
+        { k: 'you', t: 'Name the change', d: 'a PR number, a branch or a commit' },
+        { k: 'cli', t: '`tnt review new`', d: 'an `R-` id; snapshots your config from the base commit' },
+        { k: 'agent', m: 'inherit', label: 'claims-analyst', t: 'Writes its claims', d: 'what the PR says it does and what its diff adds, as ACs with `Expect:` patterns' },
+        { k: 'you', t: 'Approve the claims', d: 'the review is checked against these' }
+      ], [
+        { k: 'cli', t: '`tnt start <R>`', d: 'a temporary git worktree with the change merged into its base; runs `review.setup`' },
+        { k: 'check', t: 'tests', d: 'the configured full suite' },
+        { k: 'check', t: 'style', d: 'your lint and type checks' },
+        { k: 'agent', m: 'inherit', label: 'code-reviewer', t: 'Reviews the change', d: 'its content is treated as data, never as instructions' }
+      ], [
+        { k: 'agent', m: 'sonnet', label: 'functional-tester', t: 'Checks each claim', d: 'black-box, against the running change' },
+        { k: 'agent', m: 'inherit', label: 'evidence-auditor', t: 'Re-runs and judges', d: 'every recorded outcome must reproduce, failures included' },
+        { k: 'done', t: 'Verdict', d: '`approve` or `changes_requested`, with findings per check' }
+      ]],
+      notes: [
+        { b: 'Decided, not "passed"', t: 'A check is decided once its evidence is complete, even when the change fails it; that failure is a finding. It is undecided only while evidence is missing.' },
+        { b: 'The change can\'t pick its checks', t: 'Commands come from your config snapshot. Edits the PR makes to `.tnt/`, and merge conflicts, become blocking findings.' },
+        { b: 'Nothing is posted', t: 'You get `report.md` and a viewer. Draft review comments are only posted with your approval of the exact text.' }
+      ]
+    }
+  ];
+
+  var SPEC = '<div class="specsnip sk">' +
+    '<span class="c">## Acceptance criteria</span>\n' +
+    '- AC-1: Given two numbers, when add is called, then it returns their sum.\n' +
+    '- AC-2: Given a non-number, add throws a TypeError naming the argument.\n\n' +
+    '<span class="c">## Functional verification plan</span>\n' +
+    '- AC-1: run add(2, 3) and print the sum. <span class="e">Expect: `sum=5`</span>\n' +
+    '- AC-2: call add("x", 1) and print the error. <span class="e">Expect: `TypeError: a must be a number`</span>' +
+    '</div>';
+
+  var chips = '', boards = '';
+  FLOWS.forEach(function (f) {
+    chips += '<a class="chip sk" href="#flow-' + f.id + '">' + esc(f.title) + '</a>';
+    boards += '<article class="flowcard sk" id="flow-' + f.id + '" style="scroll-margin-top:12px">' +
+      '<div class="fhead"><h3>' + esc(f.title) + '</h3><span class="cmd">' + esc(f.cmd) + '</span></div>' +
+      '<p class="fwhen">' + fmt(f.when) + '</p>' +
+      '<div class="flow" data-flow="' + f.id + '"></div>' +
+      (f.spec ? SPEC : '') +
+      (f.notes && f.notes.length ? '<div class="notes">' + f.notes.map(function (n) {
+        return '<div class="note' + (n.red ? ' red' : '') + '"><b>' + esc(n.b) + '</b>' + fmt(n.t) + '</div>';
+      }).join('') + '</div>' : '') +
+      '</article>';
+  });
+  document.getElementById('chips').innerHTML = chips;
+  document.getElementById('flowboards').innerHTML = boards;
+  FLOWS.forEach(function (f) { renderFlow(document.querySelector('[data-flow="' + f.id + '"]'), f.rows); });
+
+  // ------------------------------------------------------------ ledger demo
+  // Same construction as core.mjs appendLedger(): body = entry + seq + ts + prev,
+  // hash = sha256(stableStringify(body)).
+  function stable(v) {
+    if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().filter(function (k) { return v[k] !== undefined; }).map(function (k) { return JSON.stringify(k) + ':' + stable(v[k]); }).join(',') + '}';
+    return JSON.stringify(v);
+  }
+  function fallbackHash(s) {
+    var out = '';
+    for (var r = 0; r < 8; r++) {
+      var h = 0x811c9dc5 ^ r;
+      for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+      out += ('00000000' + h.toString(16)).slice(-8);
+    }
+    return out;
+  }
+  function sha(s) {
+    try {
+      if (window.crypto && crypto.subtle && window.TextEncoder) {
+        return crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)).then(function (b) {
+          return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+        }).catch(function () { return fallbackHash(s); });
+      }
+    } catch (e) { /* fall through */ }
+    return Promise.resolve(fallbackHash(s));
+  }
+
+  var SEED = [
+    { type: 'approve', feature: 'F-7KQ2MX', by: 'Sam', specSha: '41d0c2a9e7', acs: ['AC-1', 'AC-2'] },
+    { type: 'start', feature: 'F-7KQ2MX', base: 'a41c9e07b3', branch: 'tnt/F-7KQ2MX-add-numbers' },
+    { type: 'lock-tests', feature: 'F-7KQ2MX', files: { 'app.test.mjs': '5d19f0c3aa' } },
+    { type: 'run', feature: 'F-7KQ2MX', step: 'red', cmd: 'npm test', exit: 1, tree: '3f9a1c07e2' },
+    { type: 'gate', feature: 'F-7KQ2MX', gate: 'red', pass: true, tree: '3f9a1c07e2' },
+    { type: 'run', feature: 'F-7KQ2MX', step: 'green', cmd: 'npm test', exit: 1, tree: '6be0d1f4c8' },
+    { type: 'run', feature: 'F-7KQ2MX', step: 'green', cmd: 'npm test', exit: 0, tree: '8c21e4d9f0' },
+    { type: 'gate', feature: 'F-7KQ2MX', gate: 'green', pass: true, tree: '8c21e4d9f0' }
+  ];
+  var SHOW = { approve: ['by', 'acs'], start: ['branch'], 'lock-tests': ['files'], run: ['step', 'cmd', 'exit', 'tree'], gate: ['gate', 'pass', 'tree'] };
+  var ledger = [], mode = 'clean';
+
+  function build() {
+    var prev = 'GENESIS', chain = Promise.resolve();
+    ledger = [];
+    SEED.forEach(function (e, i) {
+      chain = chain.then(function () {
+        var body = Object.assign({}, e, { seq: i + 1, ts: '2026-11-15T10:0' + i + ':00.000Z', prev: prev });
+        return sha(stable(body)).then(function (h) { var full = Object.assign({}, body, { hash: h }); ledger.push(full); prev = h; });
+      });
+    });
+    return chain;
+  }
+  function verify() {
+    var prev = 'GENESIS', errors = [], chain = Promise.resolve();
+    ledger.forEach(function (e) {
+      chain = chain.then(function () {
+        var body = Object.assign({}, e); delete body.hash;
+        if (e.prev !== prev) errors.push({ seq: e.seq, kind: 'link', msg: 'entry ' + e.seq + ': chain broken (prev mismatch)' });
+        prev = e.hash;
+        return sha(stable(body)).then(function (h) { if (h !== e.hash) errors.push({ seq: e.seq, kind: 'content', msg: 'entry ' + e.seq + ': content hash mismatch (entry was edited)' }); });
+      });
+    });
+    return chain.then(function () { return errors; });
+  }
+  function val(v) {
+    if (Array.isArray(v)) return v.join(', ');
+    if (v && typeof v === 'object') return Object.keys(v).map(function (k) { return k + ' ' + String(v[k]).slice(0, 6) + '…'; }).join(', ');
+    return String(v);
+  }
+  function render(errors) {
+    var bad = {}, broken = {};
+    errors.forEach(function (x) { if (x.kind === 'content') bad[x.seq] = true; else broken[x.seq] = true; });
+    var html = '';
+    ledger.forEach(function (e, i) {
+      if (i > 0) html += '<div class="link' + (broken[e.seq] ? ' broken' : '') + '">' + (broken[e.seq] ? 'prev ≠ hash of #' + (e.seq - 1) : 'prev = hash of #' + (e.seq - 1)) + '</div>';
+      var fields = (SHOW[e.type] || []).map(function (k) {
+        var changed = mode !== 'clean' && e.seq === 6 && k === 'exit';
+        return '<span>' + k + '=<b' + (changed ? ' class="changed"' : '') + '>' + esc(val(e[k])) + '</b></span>';
+      }).join(' ');
+      html += '<div class="entry sk' + (bad[e.seq] || broken[e.seq] ? ' bad' : '') + (mode !== 'clean' && e.seq === 6 ? ' edited' : '') + '">' +
+        '<div class="h1"><span class="seq">#' + e.seq + '</span><span class="type">' + e.type + '</span><span class="f">' + fields + '</span></div>' +
+        '<div class="hashes"><span>prev <b>' + esc(e.prev.slice(0, 10)) + '</b></span><span>hash <b' + (bad[e.seq] ? ' class="bad-h"' : '') + '>' + esc(e.hash.slice(0, 10)) + '</b>' + (bad[e.seq] ? ' <span class="bad-h">≠ content</span>' : '') + '</span></div></div>';
+    });
+    document.getElementById('chain').innerHTML = html;
+
+    var t = '<span class="p">$ tnt ledger verify</span>\n';
+    if (!errors.length) t += '<span class="okc">F-7KQ2MX: intact, ' + ledger.length + ' entries</span>';
+    else t += errors.map(function (x) { return '<span class="err">F-7KQ2MX ' + esc(x.msg) + '</span>'; }).join('\n') + '\n<span class="err">ledger integrity: BROKEN</span>';
+    document.getElementById('term').innerHTML = t;
+
+    var ex = {
+      clean: 'Each <code>prev</code> is the <code>hash</code> of the entry above it, and each <code>hash</code> is the sha256 of that entry\'s content. Entry #6 is the implementer\'s first, failed attempt. Try hiding it.',
+      tampered: 'The content of #6 no longer matches its own hash, so verification names the exact entry that was changed.',
+      rehashed: '#6 now looks consistent, but #7 still points at the old hash of #6, so the chain breaks there. A cover-up would have to rewrite every later entry. Even then, <code>tnt verify</code> re-runs the commands instead of trusting recorded exit codes, and git history keeps the original ledger.'
+    };
+    document.getElementById('explain').innerHTML = ex[mode];
+    document.getElementById('tamper').disabled = mode !== 'clean';
+    document.getElementById('rehash').disabled = mode !== 'tampered';
+  }
+  function refresh() { return verify().then(render); }
+
+  document.getElementById('tamper').addEventListener('click', function () {
+    ledger[5] = Object.assign({}, ledger[5], { exit: 0 });
+    mode = 'tampered'; refresh();
+  });
+  document.getElementById('rehash').addEventListener('click', function () {
+    var body = Object.assign({}, ledger[5]); delete body.hash;
+    sha(stable(body)).then(function (h) { ledger[5] = Object.assign({}, ledger[5], { hash: h }); mode = 'rehashed'; refresh(); });
+  });
+  document.getElementById('reset').addEventListener('click', function () { mode = 'clean'; build().then(refresh); });
+  build().then(refresh);
+
+  // ------------------------------------------------------------ tree binding demo
+  var GREEN = '8c21e4d9f0', EDITED = 'd07b55a1c3';
+  var tree = GREEN, greenTree = GREEN;
+  var TG = ['spec', 'red', 'green', 'style', 'review', 'functional', 'audit'];
+  function drawTree() {
+    var html = '';
+    TG.forEach(function (g, i) {
+      var t = i === 0 ? '—' : i === 1 ? '3f9a1c07e2' : greenTree;
+      var stale = i >= 3 && tree !== greenTree;
+      var cleared = i >= 3 && greenTree !== GREEN;
+      if (cleared) { html += '<div class="tg sk" style="--line:var(--ink-2)"><b>' + g + '</b><span>cleared, run again</span></div>'; return; }
+      html += '<div class="tg sk' + (stale ? ' stale' : '') + '"><b>' + g + '</b><span>' + (i === 0 ? 'spec hash' : 'tree ' + t.slice(0, 8)) + '</span></div>';
+    });
+    document.getElementById('treebar').innerHTML = html;
+    var now = document.getElementById('treenow');
+    now.innerHTML = 'current tree <b>' + tree + '</b>';
+    now.className = 'treenow' + (tree !== greenTree ? ' changed' : '');
+    var msg = document.getElementById('treemsg');
+    if (tree !== greenTree) { msg.className = 'treemsg warn'; msg.textContent = 'style, review, functional and audit were recorded against tree ' + greenTree.slice(0, 10) + ', but the current tree is ' + tree.slice(0, 10) + '. They no longer count.'; }
+    else if (greenTree !== GREEN) { msg.className = 'treemsg'; msg.textContent = 'Green passed again on ' + tree.slice(0, 10) + ' and cleared every later gate. Style, review, functional and audit now run again on this exact code.'; }
+    else { msg.className = 'treemsg'; msg.textContent = 'Everything after green was recorded on the green tree.'; }
+    document.getElementById('editcode').disabled = tree !== greenTree || greenTree !== GREEN;
+    document.getElementById('regreen').disabled = tree === greenTree;
+  }
+  document.getElementById('editcode').addEventListener('click', function () { tree = EDITED; drawTree(); });
+  document.getElementById('regreen').addEventListener('click', function () { greenTree = tree; drawTree(); });
+  document.getElementById('treereset').addEventListener('click', function () { tree = greenTree = GREEN; drawTree(); });
+  drawTree();
+
+  // ------------------------------------------------------------ copy buttons
+  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (b) {
+    b.addEventListener('click', function () {
+      var text = b.previousElementSibling.textContent;
+      function done(label) { b.textContent = label; setTimeout(function () { b.textContent = 'Copy'; }, 1600); }
+      function select() { var r = document.createRange(); r.selectNodeContents(b.previousElementSibling); var s = getSelection(); s.removeAllRanges(); s.addRange(r); done('Selected'); }
+      try { navigator.clipboard.writeText(text).then(function () { done('Copied'); }, select); } catch (e) { select(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>
