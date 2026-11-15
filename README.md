@@ -294,7 +294,7 @@ elsewhere. Set `shell` to override this.
 
 ## Escape hatches
 
-- `tnt unlock <F> --reason …` reopens locked tests. It resets red and every later gate, and the new or changed tests must fail again before implementation continues.
+- `tnt unlock <F> --reason …` reopens locked tests. It resets red and every later gate, and the new or changed tests must fail again before implementation continues. Before the red gate there is nothing to unlock: `tnt lock-tests <F> <files...> --replace` sets the locked files anew, dropping any that are no longer listed. Re-approving a changed spec drops the old lock set (the approve entry lists the dropped files), so the tests are locked again for the new ACs.
 - `tnt waive <F> <gate> --reason … --by <human>` records a human decision to skip a gate. Waivers are permanent in the ledger and flagged in reports.
 - `tnt sync <F> --relock --by <human> --reason …` accepts locked tests that a merge from the base branch changed. The new hashes, the person and the reason are recorded.
 

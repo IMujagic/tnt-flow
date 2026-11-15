@@ -175,6 +175,47 @@ test('unlock resets to spec so a new failing test can be added', () => {
   assert.equal(tnt(dir, 'gate', 'F-001', 'red').code, 0);
 });
 
+test('re-approving a changed spec drops the old lock set; an unchanged one keeps it', () => {
+  const dir = makeProject();
+  const fd = driveTo(dir, 'spec');
+  tnt(dir, 'start', 'F-001');
+  write(dir, 'old.test.mjs', TEST_FILE);
+  assert.equal(tnt(dir, 'lock-tests', 'F-001', 'old.test.mjs').code, 0);
+  const locked = () => JSON.parse(tnt(dir, 'status', 'F-001', '--json').stdout).lockedTests;
+
+  assert.equal(tnt(dir, 'approve', 'F-001', '--by', 'Tester').code, 0);
+  assert.deepEqual(locked(), ['old.test.mjs'], 'same spec: locks kept');
+
+  write(dir, path.join(fd, 'spec.md'), SPEC.replace('their sum', 'their sum as a number'));
+  const r = tnt(dir, 'approve', 'F-001', '--by', 'Tester');
+  assert.equal(r.code, 0);
+  assert.match(r.out, /previous test locks were dropped \(old\.test\.mjs\)/);
+  assert.deepEqual(locked(), []);
+  assert.deepEqual(ledgerOf(dir, fd).at(-2).droppedLocks, ['old.test.mjs']);
+
+  // the deleted old file no longer haunts the red gate
+  fs.rmSync(path.join(dir, 'old.test.mjs'));
+  write(dir, 'app.test.mjs', TEST_FILE);
+  tnt(dir, 'lock-tests', 'F-001', 'app.test.mjs');
+  tnt(dir, 'run', 'F-001', 'red');
+  assert.equal(tnt(dir, 'gate', 'F-001', 'red').code, 0);
+});
+
+test('unlock before the red gate points to lock-tests --replace', () => {
+  const dir = makeProject();
+  driveTo(dir, 'spec');
+  tnt(dir, 'start', 'F-001');
+  const none = tnt(dir, 'unlock', 'F-001', '--reason', 'x');
+  assert.equal(none.code, 2);
+  assert.match(none.out, /no tests are locked yet/);
+  write(dir, 'app.test.mjs', TEST_FILE);
+  tnt(dir, 'lock-tests', 'F-001', 'app.test.mjs');
+  const r = tnt(dir, 'unlock', 'F-001', '--reason', 'x');
+  assert.equal(r.code, 2);
+  assert.match(r.out, /nothing to unlock.*app\.test\.mjs.*lock-tests F-001 <files\.\.\.> --replace/);
+  assert.doesNotMatch(r.out, /not locked/);
+});
+
 test('start refuses a dirty working tree', () => {
   const dir = makeProject();
   driveTo(dir, 'spec');

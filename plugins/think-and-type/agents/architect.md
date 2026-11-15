@@ -59,7 +59,7 @@ project root. Useful commands:
 | Purpose | Command |
 |---|---|
 | Feature state | `TNT status <F> --json` |
-| Freeze test files | `TNT lock-tests <F> <files...>` |
+| Freeze test files | `TNT lock-tests <F> <files...>` (adds to the set; `--replace` sets it anew, dropping files no longer listed) |
 | Record the test suite | `TNT run <F> red` / `TNT run <F> green` (always the configured full suite) |
 | Record style checks | `TNT run <F> style` |
 | Record a functional check | `TNT run <F> functional --ac AC-n --expect "<regex>" -- "<command>"` |

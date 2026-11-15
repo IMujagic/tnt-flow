@@ -96,7 +96,8 @@ const runLine = (r) => `#${r.seq} ${r.step}${r.name ? ':' + r.name : ''}${r.ac ?
 
 function gateText(r) {
   if (r.kind === 'review') return reviewGateText(r);
-  const head = `gate ${r.gate} for ${r.feature}: ${r.pass ? 'PASS' : 'FAIL'} (ledger #${r.seq}, phase=${r.phase})`;
+  const dropped = r.droppedLocks ? `\nthe spec changed, so the previous test locks were dropped (${r.droppedLocks.join(', ')}); lock the tests for the new spec again` : '';
+  const head = `gate ${r.gate} for ${r.feature}: ${r.pass ? 'PASS' : 'FAIL'} (ledger #${r.seq}, phase=${r.phase})${dropped}`;
   const commit = r.commit?.sha ? `\ncommitted ${r.commit.sha.slice(0, 10)}` : r.commit?.error ? `\nWARNING: auto-commit failed: ${r.commit.error}` : '';
   if (r.pass) return head + commit;
   const limit = r.attempts >= r.maxIterations ? `\nattempt ${r.attempts}/${r.maxIterations}: iteration limit reached, escalate to the human` : `\nattempt ${r.attempts}/${r.maxIterations}`;

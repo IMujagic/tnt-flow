@@ -259,12 +259,17 @@ export function approve(root, ref, { by, profile } = {}) {
   const spec = specInfo(f.dir);
   const problems = specProblems(spec, configFor(root, f), { profile });
   if (problems.length) throw new TntError(problems.join('; '));
-  const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id), profile: f.state.kind === 'review' ? undefined : profile });
   const state = loadState(f.dir);
+  // A changed spec gets a new set of tests: locks made for the old ACs would
+  // otherwise carry over into the next lock-tests and the red gate.
+  const droppedLocks = state.approval && state.approval.specSha !== spec.sha && state.locked ? Object.keys(state.locked.files) : undefined;
+  const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id), profile: f.state.kind === 'review' ? undefined : profile, droppedLocks });
   state.approval = { by, seq: e.seq, specSha: spec.sha };
   if (state.kind !== 'review') state.profile = profile;
+  if (droppedLocks) delete state.locked;
   saveState(f.dir, state);
-  return gate(root, f.id, 'spec');
+  const r = gate(root, f.id, 'spec');
+  return droppedLocks ? { ...r, droppedLocks } : r;
 }
 
 export function start(root, ref, opts = {}) {
@@ -323,7 +328,14 @@ export function unlock(root, ref, { reason }) {
   const f = resolveFeature(root, ref);
   featureOnly(f, '`tnt unlock`');
   const state = loadState(f.dir);
-  if (!state.gates.red) throw new TntError(`${f.id}: tests are not locked`);
+  if (!state.gates.red) {
+    // Before the red gate a lock is only the set the next red attempt will claim, so
+    // there is nothing to reopen: re-lock instead.
+    if (state.locked && Object.keys(state.locked.files).length) {
+      throw new TntError(`${f.id}: the red gate has not passed, so there is nothing to unlock. To change the locked set (${Object.keys(state.locked.files).join(', ')}), run \`tnt lock-tests ${f.id} <files...> --replace\`, then record a new red run`);
+    }
+    throw new TntError(`${f.id}: no tests are locked yet; lock them with \`tnt lock-tests ${f.id} <files...>\``);
+  }
   const e = appendLedger(f.dir, { type: 'unlock', feature: f.id, reason });
   clearFrom(state, 'red');
   state.phase = 'spec';
@@ -408,7 +420,7 @@ const EVALUATORS = {
     const run = latest(ledger, (e) => e.type === 'run' && e.feature === f.id && e.step === 'green' && e.seq > state.gates.red.seq);
     p.push(...runIssues(run, tree, 'green (after the red gate)'));
     if (run && run.exit !== 0) p.push(`green run #${run.seq} failed (exit ${run.exit}); see ${run.log}`);
-    if (run && run.tree === state.gates.red.tree) p.push('tests failed and then passed on identical code: the suite is nondeterministic');
+    if (run && !state.gates.red.waived && run.tree === state.gates.red.tree) p.push('tests failed and then passed on identical code: the suite is nondeterministic');
     return p;
   },
   style(ctx) {
