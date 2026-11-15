@@ -12,7 +12,7 @@ import {
   projectDir, scopeDir, FEATURE_ID, ensureLocalIgnores,
   featuresDir, listFeatures, resolveFeature, loadState, saveState, specPath, evidenceDir,
   activePath, readActive, SPEC_TEMPLATE, slugify, parseAcceptanceCriteria, acRegex, fileSha, relPath,
-  parseSpecExpectations, weakExpectation, REVIEW_CHECKS, gatesOf, reviewsDir, REVIEW_SPEC_TEMPLATE, listReviews,
+  parseSpecExpectations, weakExpectation, withConfigDefaults, REVIEW_CHECKS, gatesOf, reviewsDir, REVIEW_SPEC_TEMPLATE, listReviews,
 } from './core.mjs';
 import os from 'node:os';
 
@@ -59,17 +59,19 @@ export function resolveShell(config) {
 
 export function execRecorded(root, opts) {
   const { feature, featureDir, step, name, ac, cmd, expect, artifacts = [], env = {} } = opts;
-  const config = loadConfig(root);
+  // A review runs every command in its own worktree with the reviewer's config,
+  // never in this checkout or with the config of the change under review.
+  const { cwd, config } = runtimeOf(root, featureDir);
   if (!cmd || !cmd.trim()) throw new TntError('empty command');
   let expectRe;
   if (expect) {
     try { expectRe = new RegExp(expect, 'm'); } catch (e) { throw new TntError(`--expect is not a valid regex: ${e.message}`); }
   }
-  for (const a of artifacts) if (!fs.existsSync(path.resolve(root, a))) throw new TntError(`artifact not found: ${a}`);
+  for (const a of artifacts) if (!fs.existsSync(path.resolve(cwd, a))) throw new TntError(`artifact not found: ${a}`);
 
   const scope = scopeDir(root, featureDir);
   const seq = nextSeq(scope);
-  const r = runCommand(root, config, { cmd, expectRe, env: { ...env, TNT_FEATURE: feature, TNT_STEP: step } });
+  const r = runCommand(cwd, config, { cmd, expectRe, env: { ...env, TNT_FEATURE: feature, TNT_STEP: step } });
   const { tree, treeAfter, head: h, exit, timedOut, durationMs, expectMatched } = r;
   // A functional run (or its re-run by `tnt verify`, recorded as step "audit") is
   // also checked against the approved spec's Expect patterns for its AC, so the
@@ -88,10 +90,10 @@ export function execRecorded(root, opts) {
   fs.writeFileSync(logAbs, logText(cmd, expect, r));
 
   const savedArtifacts = artifacts.map((a, i) => {
-    const src = path.resolve(root, a);
+    const src = path.resolve(cwd, a);
     const dest = path.join(evDir, `${stem}-artifact${i + 1}-${path.basename(src)}`);
     fs.copyFileSync(src, dest);
-    return { source: relPath(root, src), path: relPath(root, dest), sha256: sha256(fs.readFileSync(dest)) };
+    return { source: relPath(cwd, src), path: relPath(root, dest), sha256: sha256(fs.readFileSync(dest)) };
   });
 
   return appendLedger(scope, {
@@ -99,6 +101,26 @@ export function execRecorded(root, opts) {
     mutated: tree !== treeAfter, head: h, log: relPath(root, logAbs), logSha256: sha256(fs.readFileSync(logAbs)),
     expect, expectMatched, specExpect, artifacts: savedArtifacts.length ? savedArtifacts : undefined,
   });
+}
+
+// Where a scope's commands run and which config chooses them. Features run in
+// this checkout with .tnt/config.json. A review runs in its worktree with the
+// config snapshot taken from the reviewer's side when the review was created,
+// because the change under review must not choose the checks applied to it.
+export function runtimeOf(root, featureDir) {
+  const state = featureDir && fs.existsSync(path.join(featureDir, 'state.json')) ? loadState(featureDir) : null;
+  if (state?.kind !== 'review') return { cwd: root, config: loadConfig(root), review: false };
+  if (!state.workdir || !fs.existsSync(state.workdir)) {
+    throw new TntError(`${state.id}: the review worktree is missing; run \`tnt start ${state.id}\` to (re)create it`);
+  }
+  return { cwd: state.workdir, config: trustedConfig(featureDir), review: true };
+}
+
+const trustedConfig = (featureDir) => withConfigDefaults(readJson(path.join(featureDir, 'config.json')));
+
+// The config that applies to a feature or review (for choosing commands).
+export function configFor(root, f) {
+  return f?.dir && f.state?.kind === 'review' ? trustedConfig(f.dir) : loadConfig(root);
 }
 
 function outputMatches(pattern, r) {
@@ -197,7 +219,7 @@ export function approve(root, ref, { by }) {
   if (!by) throw new TntError('--by "<human name>" is required: approval records who signed off on the spec');
   const f = resolveFeature(root, ref);
   const spec = specInfo(f.dir);
-  const problems = specProblems(spec, loadConfig(root));
+  const problems = specProblems(spec, configFor(root, f));
   if (problems.length) throw new TntError(problems.join('; '));
   const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id) });
   const state = loadState(f.dir);
@@ -206,9 +228,9 @@ export function approve(root, ref, { by }) {
   return gate(root, f.id, 'spec');
 }
 
-export function start(root, ref) {
+export function start(root, ref, opts = {}) {
   const f = resolveFeature(root, ref);
-  if (f.state.kind === 'review') return startReview(root, f);
+  if (f.state.kind === 'review') return startReview(root, f, opts);
   const config = loadConfig(root);
   const state = loadState(f.dir);
   if (!state.gates.spec) throw new TntError(`${f.id}: spec gate not passed; get the spec approved first`);
@@ -415,9 +437,17 @@ const EVALUATORS = {
   },
 };
 
+// The tree a scope's evidence is judged against: this checkout for a feature,
+// the review's worktree for a review (null before it exists).
+function scopeTree(root, f) {
+  if (f.state?.kind !== 'review') return treeHash(root);
+  const wd = loadState(f.dir).workdir;
+  return wd && fs.existsSync(wd) ? treeHash(wd) : null;
+}
+
 function gateContext(root, f) {
   return {
-    root, f, state: loadState(f.dir), config: loadConfig(root), spec: specInfo(f.dir), ledger: readLedger(f.dir), tree: treeHash(root),
+    root, f, state: loadState(f.dir), config: configFor(root, f), spec: specInfo(f.dir), ledger: readLedger(f.dir), tree: scopeTree(root, f),
   };
 }
 
@@ -514,7 +544,7 @@ export function submitReview(root, ref, file) {
   if (!state.gates.style) throw new TntError(`${f.id}: style gate has not passed; review comes after style`);
   let review;
   try { review = readJson(path.resolve(root, file)); } catch (e) { throw new TntError(`cannot read review JSON: ${e.message}`); }
-  return recordReview(root, f, state, review, treeHash(root), {});
+  return recordReview(root, f, state, review, scopeTree(root, f), {});
 }
 
 // A second, independent review from a command the project configures
@@ -526,7 +556,7 @@ export function submitReview(root, ref, file) {
 export function externalReview(root, ref) {
   const f = resolveFeature(root, ref);
   const state = loadState(f.dir);
-  const config = loadConfig(root);
+  const config = configFor(root, f);
   if (!config.commands.external_review) throw new TntError('commands.external_review is not configured');
   if (!state.gates.style) throw new TntError(`${f.id}: style gate has not passed; review comes after style`);
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tnt-review-')), 'review.json');
@@ -554,7 +584,9 @@ function recordReview(root, f, state, review, tree, { source, run }) {
   // After `tnt sync` the diff starts at the integrated base, so upstream work
   // merged into the branch is not part of this feature's review.
   const changed = changedFiles(root, state.syncedBase || state.base || null, tree);
-  const reviewed = new Set(review.files_reviewed.map((p) => relPath(root, p)));
+  // Paths are relative to where the code is: this checkout, or a review's worktree.
+  const codeRoot = state.kind === 'review' && state.workdir ? state.workdir : root;
+  const reviewed = new Set(review.files_reviewed.map((p) => relPath(codeRoot, p)));
   const missed = changed.filter((c) => !reviewed.has(c));
   if (missed.length) errors.push(`not reviewed: ${missed.join(', ')} (every changed file must be read)`);
 
@@ -563,7 +595,7 @@ function recordReview(root, f, state, review, tree, { source, run }) {
     if (!SEVERITIES.includes(fd.severity)) errors.push(`${tag}: severity must be one of ${SEVERITIES.join(', ')}`);
     if (!fd.issue) errors.push(`${tag}: missing "issue"`);
     if (!fd.file || !Number.isInteger(fd.line) || !fd.quote) { errors.push(`${tag}: needs file, integer line and a verbatim quote`); return; }
-    const text = readTreeFile(root, tree, relPath(root, fd.file));
+    const text = readTreeFile(root, tree, relPath(codeRoot, fd.file));
     if (text === null) { errors.push(`${tag}: ${fd.file} is not in the reviewed tree`); return; }
     const lines = text.split(/\r?\n/);
     const window = normalize(lines.slice(Math.max(0, fd.line - 3), fd.line + 2).join('\n'));
@@ -596,7 +628,7 @@ export function submitAudit(root, ref, file) {
   const seq = nextSeq(f.dir);
   const dest = path.join(f.dir, 'evidence', `${String(seq).padStart(4, '0')}-audit.json`);
   writeJson(dest, report);
-  return appendLedger(f.dir, { type: 'audit-report', feature: f.id, verdict: report.verdict, tree: treeHash(root), file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
+  return appendLedger(f.dir, { type: 'audit-report', feature: f.id, verdict: report.verdict, tree: scopeTree(root, f), file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
 }
 
 // ---------------------------------------------------------------- independent re-verification
@@ -782,12 +814,33 @@ function commitOf(root, ref) {
   return r.stdout.trim();
 }
 
-export function newReview(root, title, { target, base } = {}) {
+// Files that steer AI agents working in the repository. A change to them is not
+// wrong in itself, but a reviewer should see it, because it affects every later
+// session in the repo.
+const AGENT_CONFIG = ['.claude', 'CLAUDE.md', 'AGENTS.md', '.mcp.json', '.cursor', '.cursorrules', '.github/copilot-instructions.md'];
+
+// The config a review applies comes from the side doing the checking: the base
+// commit's .tnt/config.json, or this checkout's when the base has none. Never the
+// change's own, which could otherwise pick the commands that check it.
+function trustedConfigText(root, baseCommit, { local = false } = {}) {
+  if (local) return { text: fs.readFileSync(configPath(root), 'utf8'), source: `this checkout's ${TNT_DIR}/config.json (--local-config)` };
+  const r = git(root, ['show', `${baseCommit}:${TNT_DIR}/config.json`], { allowFail: true });
+  if (r.status === 0) {
+    try { JSON.parse(r.stdout); return { text: r.stdout, source: `${TNT_DIR}/config.json at the base commit ${baseCommit.slice(0, 10)}` }; } catch { /* fall through */ }
+  }
+  return { text: fs.readFileSync(configPath(root), 'utf8'), source: `this checkout's ${TNT_DIR}/config.json (the base commit has none)` };
+}
+
+const changedPaths = (root, from, to, paths) => git(root, ['diff', '--name-only', from, to, '--', ...paths], { allowFail: true }).stdout
+  .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+export function newReview(root, title, { target, base, headOnly = false, localConfig = false } = {}) {
   if (!title || !title.trim()) throw new TntError('review title required');
   if (!target) throw new TntError('--target <ref> is required: the branch, commit or fetched pull request head to review');
   const commit = commitOf(root, target);
   const baseRef = base || defaultBaseRef(root);
-  const mb = git(root, ['merge-base', commitOf(root, baseRef), commit], { allowFail: true });
+  const baseCommit = commitOf(root, baseRef);
+  const mb = git(root, ['merge-base', baseCommit, commit], { allowFail: true });
   if (mb.status !== 0) throw new TntError(`${target} and ${baseRef} share no history`);
   const mergeBase = mb.stdout.trim();
   const taken = new Set(listReviews(root).map((r) => r.id));
@@ -796,26 +849,100 @@ export function newReview(root, title, { target, base } = {}) {
   const dir = path.join(reviewsDir(root), `${id}-${slugify(title)}`);
   fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
   ensureLocalIgnores(root);
+  const trusted = trustedConfigText(root, baseCommit, { local: localConfig });
+  fs.writeFileSync(path.join(dir, 'config.json'), trusted.text);
   const t = { ref: target, commit, baseRef };
   fs.writeFileSync(specPath(dir), REVIEW_SPEC_TEMPLATE(id, title.trim(), t));
-  saveState(dir, {
+  const mode = headOnly ? 'head' : 'merge';
+  const tntChanges = changedPaths(root, mergeBase, commit, [TNT_DIR]);
+  const agentChanges = changedPaths(root, mergeBase, commit, AGENT_CONFIG);
+  const state = {
     kind: 'review', id, title: title.trim(), created: new Date().toISOString(), phase: 'draft', gates: {}, attempts: {},
-    approval: null, target: t, base: mergeBase, tree: null, verdict: null, locked: null, syncedBase: null, branch: null, unlocks: [], waivers: [],
+    approval: null, target: t, mode, baseCommit, mergeBase, base: mode === 'merge' ? baseCommit : mergeBase,
+    configSource: trusted.source, configSha: sha256(trusted.text), tntChanges, agentChanges, mergeConflict: null,
+    workdir: null, tree: null, verdict: null, locked: null, syncedBase: null, branch: null, unlocks: [], waivers: [],
+  };
+  saveState(dir, state);
+  appendLedger(dir, {
+    type: 'review-created', feature: id, title: title.trim(), target, commit, baseRef, baseCommit, mergeBase, mode,
+    configSource: trusted.source, configSha: state.configSha, tntChanges, agentChanges,
   });
-  appendLedger(dir, { type: 'review-created', feature: id, title: title.trim(), target, commit, baseRef, base: mergeBase });
-  return { id, dir: relPath(root, dir), commit, base: mergeBase, baseRef };
+  return { id, dir: relPath(root, dir), commit, base: state.base, baseRef, mode, configSource: trusted.source, tntChanges, agentChanges };
 }
 
-function startReview(root, f) {
+function removeWorktree(root, wd) {
+  if (!wd) return;
+  git(root, ['worktree', 'remove', '--force', wd], { allowFail: true });
+  fs.rmSync(wd, { recursive: true, force: true });
+  git(root, ['worktree', 'prune'], { allowFail: true });
+}
+
+// Builds the code under review in a temporary worktree outside this checkout:
+// the change merged into its base (what would ship), or with --head-only the
+// change's own commit. Your branch, working tree and .claude/ settings are never
+// touched, and nothing from the change runs in the folder of your session.
+function startReview(root, f, { headOnly = false } = {}) {
   const state = loadState(f.dir);
   if (!state.gates.spec) throw new TntError(`${f.id}: the claims in spec.md are not approved yet`);
-  if (state.tree) return { feature: f.id, kind: 'review', alreadyStarted: true, commit: state.target.commit, tree: state.tree };
-  if (head(root) !== state.target.commit) throw new TntError(`check out the change first: git switch --detach ${state.target.commit}`);
-  if (!isClean(root)) throw new TntError('the working tree has local changes; a review runs on the change exactly as submitted');
-  state.tree = treeHash(root);
+  if (headOnly && state.mode !== 'head') {
+    if (state.tree) throw new TntError(`${f.id} was started on the merge result; create a new review with --head-only to review the change's own commit`);
+    state.mode = 'head';
+    state.base = state.mergeBase;
+    appendLedger(f.dir, { type: 'review-mode', feature: f.id, mode: 'head', base: state.base });
+    saveState(f.dir, state);
+  }
+  if (state.tree && state.workdir && fs.existsSync(state.workdir)) {
+    return { feature: f.id, kind: 'review', alreadyStarted: true, commit: state.target.commit, mode: state.mode, tree: state.tree, workdir: state.workdir };
+  }
+  removeWorktree(root, state.workdir);
+  const wd = path.join(os.tmpdir(), `tnt-${f.id}-${crypto.randomBytes(4).toString('hex')}`);
+  git(root, ['worktree', 'add', '--detach', wd, state.mode === 'head' ? state.target.commit : state.baseCommit]);
+  if (state.mode === 'merge') {
+    const m = git(wd, ['-c', 'user.name=tnt review', '-c', 'user.email=tnt-review@localhost', '-c', 'commit.gpgsign=false',
+      'merge', '--no-ff', '--no-edit', '--no-verify', state.target.commit], { allowFail: true });
+    if (m.status !== 0) {
+      const files = git(wd, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true }).stdout.split(/\r?\n/).filter(Boolean);
+      removeWorktree(root, wd);
+      if (!state.mergeConflict) {
+        state.mergeConflict = files;
+        state.workdir = null;
+        saveState(f.dir, state);
+        appendLedger(f.dir, { type: 'merge-conflict', feature: f.id, baseCommit: state.baseCommit, commit: state.target.commit, files });
+      }
+      throw new TntError(`the change does not merge cleanly into ${state.target.baseRef} (${files.join(', ') || 'merge failed'}). `
+        + `That is recorded as a finding. To review the change's own commit instead, run \`tnt start ${f.id} --head-only\``);
+    }
+  }
+  state.workdir = wd;
   saveState(f.dir, state);
-  appendLedger(f.dir, { type: 'start', feature: f.id, commit: state.target.commit, tree: state.tree });
-  return { feature: f.id, kind: 'review', commit: state.target.commit, tree: state.tree };
+  const config = trustedConfig(f.dir);
+  if (config.review?.setup) {
+    const run = execRecorded(root, { feature: f.id, featureDir: f.dir, step: 'setup', cmd: config.review.setup });
+    if (run.exit !== 0 || run.timedOut || run.mutated) {
+      throw new TntError(`review.setup ${run.mutated ? 'modified tracked files' : run.timedOut ? 'timed out' : `exited ${run.exit}`} (run #${run.seq}, log ${run.log}); fix it and run \`tnt start ${f.id}\` again`);
+    }
+  }
+  const tree = treeHash(wd);
+  const recreated = Boolean(state.tree);
+  if (recreated && tree !== state.tree) {
+    throw new TntError(`the recreated worktree holds different code (${tree.slice(0, 10)}) from the code under review (${state.tree.slice(0, 10)})`);
+  }
+  state.tree = tree;
+  saveState(f.dir, state);
+  appendLedger(f.dir, { type: 'start', feature: f.id, commit: state.target.commit, mode: state.mode, base: state.base, tree, recreated: recreated || undefined });
+  return { feature: f.id, kind: 'review', commit: state.target.commit, mode: state.mode, tree, workdir: wd, recreated };
+}
+
+// Removes a review's worktree. The evidence stays; `tnt start <R>` rebuilds the
+// same code if it is needed again (for example to re-run `tnt verify`).
+export function closeReview(root, ref) {
+  const f = resolveFeature(root, ref);
+  if (f.state.kind !== 'review') throw new TntError(`${f.id} is not a review`);
+  const state = loadState(f.dir);
+  removeWorktree(root, state.workdir);
+  state.workdir = null;
+  saveState(f.dir, state);
+  return { feature: f.id, closed: true };
 }
 
 const REVIEW_EVALUATORS = {
@@ -840,9 +967,12 @@ const REVIEW_EVALUATORS = {
     }
     return { missing, findings };
   },
-  review({ ledger, tree, f, config }) {
+  review({ ledger, tree, f, config, state }) {
     const missing = [];
+    // Findings the harness adds itself, so no reviewer can miss them.
     const findings = [];
+    if (state.tntChanges?.length) findings.push(`blocking: the change modifies tnt's own files (${state.tntChanges.join(', ')}). The review ignored them and applied ${state.configSource}; a change under review must not alter how it is checked`);
+    if (state.mergeConflict) findings.push(`blocking: the change does not merge cleanly into ${state.target.baseRef} (${state.mergeConflict.join(', ')}); this review covers the change's own commit`);
     const judge = (r, label, how) => {
       if (!r) missing.push(`no ${label} recorded (${how})`);
       else if (r.tree !== tree) missing.push(`${label} #${r.seq} covers other code; review again`);
@@ -927,6 +1057,7 @@ function reviewGate(root, f, g) {
   } else {
     state.attempts[g] = (state.attempts[g] || 0) + 1;
   }
+  if (decided && g === 'audit') { removeWorktree(root, state.workdir); state.workdir = null; }
   saveState(f.dir, state);
   if (decided && g === 'audit') writeReport(root, f.id);
   return {
@@ -940,9 +1071,10 @@ function reviewGate(root, f, g) {
 // reproduced; a run whose outcome flips is flaky evidence, and that is a finding.
 function verifyReview(root, f) {
   const state = loadState(f.dir);
-  const config = loadConfig(root);
+  const { cwd, config } = runtimeOf(root, f.dir);
   const failures = verifyLedger(root, f.dir).errors.map((e) => `ledger: ${e}`);
-  const tree = treeHash(root);
+  if (sha256(fs.readFileSync(path.join(f.dir, 'config.json'), 'utf8')) !== state.configSha) failures.push('the review config snapshot was edited after the review was created');
+  const tree = treeHash(cwd);
   if (!state.tree) failures.push('review not started');
   else if (state.tree !== tree) failures.push('the working tree is not the change under review');
   const ledger = readLedger(f.dir);
@@ -979,7 +1111,8 @@ function reviewStatus(root, f, state, config) {
   try { acs = specInfo(f.dir).acs.map((a) => a.id); } catch { /* draft */ }
   return {
     id: f.id, kind: 'review', title: state.title, dir: relPath(root, f.dir), phase: state.phase, nextGate: next, checks: REVIEW_CHECKS,
-    started: Boolean(state.tree), target: state.target, base: state.base, syncedBase: null, acs, gates: state.gates, attempts: state.attempts,
+    started: Boolean(state.tree), target: state.target, base: state.base, mode: state.mode, workdir: state.workdir ?? null,
+    configSource: state.configSource, tntChanges: state.tntChanges ?? [], agentChanges: state.agentChanges ?? [], mergeConflict: state.mergeConflict ?? null, syncedBase: null, acs, gates: state.gates, attempts: state.attempts,
     verdict: state.verdict ?? null, lockedTests: [], waivers: state.waivers, unlocks: [], maxIterations: config.limits.maxIterations,
   };
 }
@@ -1022,7 +1155,11 @@ export function writeReport(root, ref) {
     `Generated by \`tnt report\`. Ledger integrity: **${integrity.ok ? 'intact' : 'BROKEN'}** (${integrity.count} entries).`, '',
     `- Phase: **${state.phase}**`, `- ${review ? 'Claims' : 'Spec'} approved by: ${state.approval?.by ?? '—'} (ledger #${state.approval?.seq ?? '—'})`,
     ...(review ? [
-      `- Change: \`${state.target.ref}\` at \`${state.target.commit}\`, reviewed against \`${state.target.baseRef}\` (merge base \`${state.base}\`)`,
+      `- Change: \`${state.target.ref}\` at \`${state.target.commit}\`, against \`${state.target.baseRef}\``,
+      `- Reviewed: ${state.mode === 'head' ? `the change's own commit (diff from merge base \`${state.base}\`)` : `the change merged into \`${state.target.baseRef}\` at \`${state.baseCommit}\` (what would ship)`}`,
+      `- Config applied: ${state.configSource} (sha256 \`${String(state.configSha).slice(0, 12)}\`)`,
+      ...(state.tntChanges?.length ? [`- **The change modifies tnt files, which the review ignored:** ${state.tntChanges.map((x) => `\`${x}\``).join(', ')}`] : []),
+      ...(state.agentChanges?.length ? [`- The change modifies AI agent configuration: ${state.agentChanges.map((x) => `\`${x}\``).join(', ')}`] : []),
       `- Verdict: **${state.verdict ? state.verdict.replace('_', ' ').toUpperCase() : 'pending'}**`,
     ] : [
       `- Base: \`${state.base || '(root)'}\`  Branch: \`${state.branch ?? '—'}\``,
@@ -1032,7 +1169,7 @@ export function writeReport(root, ref) {
     ...gatesOf(state).map((g) => {
       const s = state.gates[g];
       const st = !s ? 'pending' : s.waived ? '**WAIVED**' : s.pass === false ? '**FINDINGS**' : 'passed';
-      return `| ${g} | ${st} | ${s ? '#' + s.seq : '—'} | ${s ? '`' + s.tree.slice(0, 10) + '`' : '—'} |`;
+      return `| ${g} | ${st} | ${s ? '#' + s.seq : '—'} | ${s?.tree ? '`' + s.tree.slice(0, 10) + '`' : '—'} |`;
     }),
   ];
   if (review) {

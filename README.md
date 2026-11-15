@@ -121,9 +121,9 @@ it with the same evidence machinery:
 | Check | Decided from |
 |---|---|
 | spec | the change's claims, written by the `claims-analyst` agent from its description and diff, each with an `Expect:` pattern; you approve them |
-| tests | the configured full suite, run on the change exactly as submitted |
-| style | every configured style command on the change |
-| review | an independent `code-reviewer` (plus `external_review` if configured), with quotes checked against the code; claims the change's own tests don't cover are major findings |
+| tests | the configured full suite, run on the change merged into its base |
+| style | every configured style command on the same code |
+| review | an independent `code-reviewer` (plus `external_review` if configured), with quotes checked against the code; claims the change's own tests don't cover are major findings; changes to `.tnt/` and merge conflicts are blocking findings the harness adds itself |
 | functional | black-box runs per claim, matched against the approved `Expect:` patterns |
 | audit | `tnt verify` re-runs everything and each run must reproduce its recorded outcome, failures included; then a fresh auditor judges whether the evidence backs every pass and finding |
 
@@ -135,15 +135,28 @@ other code. After the audit the review gets a verdict, `approve` or `changes_req
 and `report.md` lists every finding with its log or `file:line`. `tnt view` shows the
 timeline next to your features.
 
-Reviews live in `.tnt/reviews/R-…/`, which is git-ignored, and they never commit,
-push or post anything. The skill checks out the change detached and returns you to
-your branch at the end. It offers to draft review comments, but posts nothing without
-your approval of the text.
+### What the change under review can't touch
 
-Under the hood: `tnt review new "<title>" --target <ref> [--base <ref>]`, `tnt approve <R>`,
-`tnt start <R>` (with the change checked out), `tnt run <R> tests|style|functional`,
-`tnt review submit|external <R>`, `tnt verify <R>`, `tnt audit submit <R>` and
-`tnt gate <R> <check>`.
+- **The checks.** A review never reads the change's `.tnt/config.json`. When the review is created, it snapshots the config from the reviewer's side: the base commit's `.tnt/config.json`, or with `--local-config` your checkout's. Its hash goes in the ledger, and every command comes from that snapshot. If the change edits anything under `.tnt/`, the edit is ignored and the review check gets a blocking finding, whatever the code reviewer says.
+- **Your checkout.** `tnt start <R>` builds the code in a temporary git worktree outside the project, so your branch, working tree, `.claude/` settings and `CLAUDE.md` stay as they are, and nothing from the change runs in the folder of your Claude Code session. The report also lists changes to AI agent configuration (`.claude/`, `CLAUDE.md`, `AGENTS.md`, `.mcp.json`), because they steer every later session in the repo.
+- **What gets checked.** By default the worktree holds the change *merged into its base*, which is what would ship, as in CI. A merge conflict is a blocking finding, and `tnt start <R> --head-only` then reviews the change's own commit. Create the review with `--head-only` to review the head from the start.
+
+A fresh worktree has no installed dependencies. Set `"review": { "setup": "npm ci" }` (or your
+stack's equivalent) in the config; `tnt start` runs it in the worktree and records it.
+Running a review means running the change's code (its tests, its install scripts) on
+your machine, with your credentials. That's normal for a colleague's pull request; for
+one from an outside fork, run it in a container (point `shell` at a `docker run …`
+wrapper) or don't run it.
+
+Reviews live in `.tnt/reviews/R-…/`, which is git-ignored, and they never commit,
+push or post anything. The worktree is removed when the audit is decided, and
+`tnt start <R>` rebuilds the same code if you need to re-run `tnt verify`. The skill
+offers to draft review comments, but posts nothing without your approval of the text.
+
+Under the hood: `tnt review new "<title>" --target <ref> [--base <ref>] [--head-only] [--local-config]`,
+`tnt approve <R>`, `tnt start <R>`, `tnt run <R> tests|style|functional`,
+`tnt review submit|external <R>`, `tnt verify <R>`, `tnt audit submit <R>`,
+`tnt gate <R> <check>` and `tnt review close <R>`.
 
 ## What counts as functional proof
 
@@ -259,6 +272,7 @@ The CLI checkout and the log directory are excluded from git so that they don't 
   "commands": { "test": "npm test", "lint": "npm run lint", "format_check": "npx prettier --check .", "typecheck": "npx tsc --noEmit", "build": null, "external_review": null },
   "style": ["lint", "format_check", "typecheck"],
   "functional": { "requireSpecExpect": true },
+  "review": { "setup": null },
   "git": { "autoCommit": true, "branchPerFeature": true, "branchPrefix": "tnt/" },
   "red": { "requireAcInOutput": true },
   "limits": { "maxIterations": 3 },

@@ -139,6 +139,7 @@ export const DEFAULT_CONFIG = {
   commands: { test: null, lint: null, format_check: null, typecheck: null, build: null, external_review: null },
   style: [],
   functional: { requireSpecExpect: true },
+  review: { setup: null },
   git: { autoCommit: true, branchPerFeature: true, branchPrefix: 'tnt/' },
   red: { requireAcInOutput: true },
   limits: { maxIterations: 3 },
@@ -157,8 +158,9 @@ function deepMerge(base, over) {
 }
 
 export const configPath = (root) => path.join(root, TNT_DIR, 'config.json');
+export const withConfigDefaults = (config) => deepMerge(DEFAULT_CONFIG, config);
 export function loadConfig(root) {
-  return deepMerge(DEFAULT_CONFIG, readJson(configPath(root)));
+  return withConfigDefaults(readJson(configPath(root)));
 }
 
 // ---------------------------------------------------------------- ledger

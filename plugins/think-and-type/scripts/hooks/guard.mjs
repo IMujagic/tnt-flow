@@ -24,7 +24,7 @@ const PROTECTED = [
   /^\.tnt\/_project\/(ledger\.jsonl$|evidence\/)/,
   /^\.tnt\/features\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
   /^\.tnt\/features\/[^/]+\/evidence\//,
-  /^\.tnt\/reviews\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
+  /^\.tnt\/reviews\/[^/]+\/(ledger\.jsonl|state\.json|report\.md|config\.json)$/,
   /^\.tnt\/reviews\/[^/]+\/evidence\//,
 ];
 // Agents that may write only these files (verifiers, and the claims analyst of a review).
@@ -88,7 +88,10 @@ const posix = (p) => p.replace(/\\/g, '/');
 let input;
 try { input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch { process.exit(0); }
 const projectDir = path.resolve(process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd());
-const root = findRoot(input.cwd || projectDir) || findRoot(projectDir);
+// The session's project wins over the current directory: a review's worktree
+// (a temporary checkout of someone else's change) may carry its own .tnt/, and
+// it must not become the root these protections are measured from.
+const root = findRoot(projectDir) || findRoot(input.cwd || projectDir);
 if (!root) process.exit(0);
 
 const tool = input.tool_name;
@@ -119,7 +122,7 @@ if (SHELL_TOOLS.has(tool)) {
     if (git) deny(`\`${git}\` is not a step's job: the harness commits, the orchestrator merges, and changes are never discarded or history rewritten. Report what you need instead.`);
   }
   if (writes(cmd)) {
-    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|(features|reviews)\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
+    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/)|reviews\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|config\.json|evidence\/))/.test(cmd)) {
       deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
     }
     for (const file of locked) {

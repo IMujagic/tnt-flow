@@ -53,8 +53,11 @@ Ids starting `R-` are reviews of someone else's change (`/tnt:review-non-tnt-fea
 They live in `.tnt/reviews/<R-dir>/`, and their checks are spec → tests → style →
 review → functional → audit. The change is never modified. A check is decided with
 a pass or with findings against the change, and both are valid outcomes. Only missing
-or invalid evidence needs another attempt. `TNT status <R> --json` gives `dir`, `base`
-and `target`.
+or invalid evidence needs another attempt. `TNT status <R> --json` gives `dir`, `base`,
+`target` and `workdir`: the code under review is built in a temporary worktree
+outside the project, and `TNT run` executes there with the reviewer's config, never
+the change's own. Read the change's code in `workdir`, and run `TNT` from the project
+root.
 
 ## 3. Step boundaries
 

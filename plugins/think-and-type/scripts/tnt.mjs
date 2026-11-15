@@ -54,9 +54,12 @@ Reporting
   tnt view [<F>...] [--out <file>] [--open]         write .tnt/view.html: the ledger as a browsable timeline with code diffs
 
 Reviews of changes built outside tnt (checks: ${REVIEW_CHECKS.join(' > ')})
-  tnt review new "<title>" --target <ref> [--base <ref>]   create R-xxx for a branch, commit or fetched PR head (local, git-ignored)
+  tnt review new "<title>" --target <ref> [--base <ref>] [--head-only] [--local-config]
+                                                    create R-xxx for a branch, commit or fetched PR head (local, git-ignored);
+                                                    snapshots the base commit's config (or this checkout's), which every check applies
   tnt approve <R> --by "<human>"                    approve the change's claims in its spec.md
-  tnt start <R>                                     with the change checked out (detached, no local edits): record its tree
+  tnt start <R> [--head-only]                       build the change merged into its base (or its own commit) in a temporary worktree
+  tnt review close <R>                              remove the worktree (evidence kept)
   tnt run <R> tests | style | functional ...        record evidence on the change (tests = commands.test)
   tnt review submit|external <R>, tnt verify <R>, tnt audit submit <R> ...   as for features
   tnt gate <R> <check>                              decide a check: pass or findings against the change (exit 0); exit 1 = evidence missing
@@ -70,7 +73,7 @@ function parse(argv) {
     if (a === '--') { rest = argv.slice(i + 1); break; }
     if (a.startsWith('--')) {
       const key = a.slice(2);
-      if (['json', 'force', 'replace', 'integrated', 'relock', 'open'].includes(key)) { flags[key] = true; continue; }
+      if (['json', 'force', 'replace', 'integrated', 'relock', 'open', 'head-only', 'local-config'].includes(key)) { flags[key] = true; continue; }
       const val = argv[++i];
       if (val === undefined) throw new TntError(`--${key} needs a value`);
       if (key === 'artifact') (flags.artifact ??= []).push(val); else flags[key] = val;
@@ -143,8 +146,8 @@ function main(argv) {
     }
     case 'approve': { const r = h.approve(root, args[0], { by: flags.by }); out(flags, r, gateText); return (r.kind === 'review' ? r.decided : r.pass) ? 0 : 1; }
     case 'start': {
-      const r = h.start(root, args[0]);
-      out(flags, r, r.kind === 'review' ? `${r.feature} started${r.alreadyStarted ? ' (already)' : ''} on ${r.commit.slice(0, 10)}, tree ${r.tree.slice(0, 10)}` : `${r.feature} started${r.alreadyStarted ? ' (already)' : ''}; branch=${r.branch ?? '—'} base=${r.base || '(root)'}`);
+      const r = h.start(root, args[0], { headOnly: flags['head-only'] });
+      out(flags, r, r.kind === 'review' ? `${r.feature} started${r.alreadyStarted ? ' (already)' : r.recreated ? ' (worktree rebuilt)' : ''}: ${r.mode === 'head' ? 'change ' + r.commit.slice(0, 10) : 'merge result'} in ${r.workdir}, tree ${r.tree.slice(0, 10)}` : `${r.feature} started${r.alreadyStarted ? ' (already)' : ''}; branch=${r.branch ?? '—'} base=${r.base || '(root)'}`);
       return 0;
     }
     case 'lock-tests': {
@@ -162,7 +165,7 @@ function main(argv) {
       const [ref, step] = args;
       const f = ref === PROJECT_FEATURE ? { id: PROJECT_FEATURE, dir: null } : resolveFeature(root, ref);
       if (f.dir === null && step !== 'probe') throw new TntError(`${PROJECT_FEATURE} only accepts probe runs; use \`tnt baseline\` to record the configured test and style commands`);
-      const config = loadConfig(root);
+      const config = h.configFor(root, f);
       // `-- "<full command string>"` is used verbatim; several words are re-quoted for the shell.
       const userCmd = rest?.length === 1 ? rest[0] : rest?.length ? rest.map(quote).join(' ') : flags.cmd;
       let runs;
@@ -205,8 +208,18 @@ function main(argv) {
     case 'review':
     case 'audit': {
       if (cmd === 'review' && args[0] === 'new') {
-        const r = h.newReview(root, args.slice(1).join(' '), { target: flags.target, base: flags.base });
-        out(flags, r, `created review ${r.id} of ${r.commit.slice(0, 10)} (merge base ${r.base.slice(0, 10)} with ${r.baseRef}): write the change's claims in ${r.dir}/spec.md`);
+        const r = h.newReview(root, args.slice(1).join(' '), { target: flags.target, base: flags.base, headOnly: flags['head-only'], localConfig: flags['local-config'] });
+        out(flags, r, () => [
+          `created review ${r.id} of ${r.commit.slice(0, 10)} against ${r.baseRef}: write the change's claims in ${r.dir}/spec.md`,
+          `reviews ${r.mode === 'head' ? "the change's own commit" : `the change merged into ${r.baseRef}`}; config: ${r.configSource}`,
+          ...(r.tntChanges.length ? [`WARNING: the change modifies tnt files (${r.tntChanges.join(', ')}); they are ignored and reported as a blocking finding`] : []),
+          ...(r.agentChanges.length ? [`note: the change modifies AI agent configuration (${r.agentChanges.join(', ')})`] : []),
+        ].join('\n'));
+        return 0;
+      }
+      if (cmd === 'review' && args[0] === 'close') {
+        const r = h.closeReview(root, args[1]);
+        out(flags, r, `${r.feature}: worktree removed (evidence kept; \`tnt start ${r.feature}\` rebuilds it)`);
         return 0;
       }
       if (cmd === 'review' && args[0] === 'external') {
@@ -237,7 +250,7 @@ function main(argv) {
       const r = h.status(root, args[0]);
       const checkLine = (g) => { const s = r.gates[g]; return `${g}:${!s ? 'pending' : s.waived ? 'WAIVED' : s.pass === false ? 'FINDINGS' : 'pass'}${s ? '#' + s.seq : ''}`; };
       out(flags, r, () => (args[0] && r.kind === 'review'
-        ? `${r.id} ${r.title} (review of ${r.target.ref} at ${r.target.commit.slice(0, 10)}, base ${r.target.baseRef})\n  phase: ${r.phase}  next check: ${r.nextGate ?? '—'}  started: ${r.started}  verdict: ${r.verdict ?? 'pending'}\n  claims: ${r.acs.join(', ') || '—'}\n  checks: ${r.checks.map(checkLine).join(' ')}\n  attempts: ${JSON.stringify(r.attempts)}`
+        ? `${r.id} ${r.title} (review of ${r.target.ref} at ${r.target.commit.slice(0, 10)}, ${r.mode === 'head' ? 'own commit' : 'merged into ' + r.target.baseRef})\n  worktree: ${r.workdir ?? '—'}\n  phase: ${r.phase}  next check: ${r.nextGate ?? '—'}  started: ${r.started}  verdict: ${r.verdict ?? 'pending'}\n  claims: ${r.acs.join(', ') || '—'}\n  checks: ${r.checks.map(checkLine).join(' ')}\n  attempts: ${JSON.stringify(r.attempts)}`
         : args[0]
         ? `${r.id} ${r.title}\n  phase: ${r.phase}  next gate: ${r.nextGate ?? '—'}  started: ${r.started}  branch: ${r.branch ?? '—'}\n  ACs: ${r.acs.join(', ') || '—'}\n  locked tests: ${r.lockedTests.join(', ') || '—'}\n  passed: ${Object.entries(r.gates).map(([g, s]) => `${g}#${s.seq}${s.waived ? '(WAIVED)' : ''}`).join(' ') || '—'}\n  attempts: ${JSON.stringify(r.attempts)}`
         : `${r.project.name} (${r.project.type})  active: ${r.active ?? '—'}\n${r.features.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.waivers ? '  [waivers]' : ''}`).join('\n') || '  no features yet'}${r.reviews.length ? '\nreviews of non-tnt changes (local)\n' + r.reviews.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.verdict ? '  verdict: ' + x.verdict : ''}`).join('\n') : ''}`));

@@ -34,8 +34,11 @@ expected and actual output, and the log path. Classify it:
 - **environment**: something is missing or a port is in use. Say exactly what.
 - **spec gap**: the AC cannot be observed as written.
 
-**Reviewing a change built outside tnt (ids starting `R-`)**: the ACs are the
-change's claims. A claim that doesn't hold is the review's result, not something to
+**Reviewing a change built outside tnt (ids starting `R-`)**: the code under review
+lives in a temporary worktree (`workdir` from `TNT status <R> --json`), and
+`TNT run <R> functional …` executes your command there, so write commands relative to
+the worktree and call helper scripts in `<dir>/functional/` by absolute path. Run `TNT`
+from the project root. The ACs are the change's claims. A claim that doesn't hold is the review's result, not something to
 fix: record the run that shows it, and RESULT is still `done` once every claim has a
 recorded run. Only an environment problem or a probe you got wrong needs another
 attempt. Re-record the same command to replace a wrong probe, because a different
