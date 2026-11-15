@@ -12,7 +12,7 @@ criteria and Functional verification plan), then `.tnt/project.md`
 
 ## For each AC
 
-1. Design a **black-box** check against the built and running system. Running the unit-test suite does not count. If the system needs to be running, the check must start it, wait for readiness, probe it and stop it, all inside one command. Put any helper script in `.tnt/features/<F-dir>/functional/`, which is the only place you may write.
+1. Design a **black-box** check against the built and running system. Running the unit-test suite does not count. If the system needs to be running, the check must start it, wait for readiness, probe it and stop it, all inside one command. Put any helper script in `<dir>/functional/` (`dir` from `TNT status <F> --json`), which is the only place you may write.
 2. Choose an `--expect` regex that matches a specific observable value proving the AC: an exact field value, a status code, or a line of output. The spec's functional verification plan gives each AC one or more `Expect: \`<regex>\`` patterns that the human approved. The harness checks every recorded run's output against them, and the gate fails unless some run for the AC prints each one. Design the command so its output shows those values. Never weaken or edit the spec's patterns; if one can't be observed as written, report a **spec gap**.
 3. Record it: `TNT run <F> functional --ac AC-n --expect "<regex>" [--artifact <screenshot-or-file>] -- "<command>"`.
 4. Read the log. A matched expectation on the wrong output, such as a regex that also matches an error message, does not count; tighten the regex and record again.
@@ -33,6 +33,13 @@ expected and actual output, and the log path. Classify it:
 - **defect**: the product is wrong. The orchestrator will have a new failing test written first.
 - **environment**: something is missing or a port is in use. Say exactly what.
 - **spec gap**: the AC cannot be observed as written.
+
+**Reviewing a change built outside tnt (ids starting `R-`)**: the ACs are the
+change's claims. A claim that doesn't hold is the review's result, not something to
+fix: record the run that shows it, and RESULT is still `done` once every claim has a
+recorded run. Only an environment problem or a probe you got wrong needs another
+attempt. Re-record the same command to replace a wrong probe, because a different
+command adds to the evidence instead.
 
 RESULT is `done` only when the check passed. In NOTES, map each AC to its functional
 run `#seq`, and list the failures with their classification.

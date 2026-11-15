@@ -27,7 +27,7 @@ merge), `minor` (should fix), `nit` (optional).
 
 ## Submit
 
-Write `.tnt/features/<F-dir>/review.draft.json`:
+Write `<dir>/review.draft.json`, where `dir` comes from `TNT status <F> --json`:
 
 ```json
 {
@@ -50,6 +50,17 @@ Then run `TNT review submit <F> <draft>`. The CLI rejects a finding whose quote 
 in the code, a changed file that is missing from `files_reviewed`, and an approval
 that still has blocking or major findings. If it rejects your submission, fix the
 draft and submit again. Then run `TNT check <F> review`.
+
+## Reviewing a change built outside tnt (ids starting `R-`)
+
+The change is someone else's and was not built test-first, so there are no locked
+tests and no red or green logs. `spec.md` lists the change's claims as ACs, and
+`TNT status <R> --json` gives `base` and `target.commit`. Review the diff
+`git diff <base> -- . ':(exclude).tnt'` as checked out. The checklist is the same,
+with one addition: for each claim, check that the change's own tests would catch a
+wrong implementation of it. A claim with no such test is a **major** finding with
+`needs_test: true`. Your findings go to the change's author, so make each issue
+self-explanatory.
 
 Approve only when you would merge the change yourself. Never edit source or tests.
 In NOTES, give the verdict, the counts by severity, and the review `#seq`.

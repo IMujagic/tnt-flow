@@ -68,6 +68,7 @@ To work on the plugin without installing it, run `claude --plugin-dir plugins/th
 | `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
 | `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity. Offers to open the ledger viewer |
 | `/tnt:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge. Ask it to check a merge result to run `tnt verify --integrated` |
+| `/tnt:review-non-tnt-feature <PR#\|branch>` | Review someone else's change with evidence: its claims, tests, style, an independent code review and functional checks, ending in a verdict and findings. Local only; never touches the change |
 | `/tnt:commit [hint]` | Commit current changes as single-line Conventional Commits (`type(scope): subject`), with no body and no co-author trailers; unrelated changes are split into separate commits |
 
 Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
@@ -76,7 +77,7 @@ Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 .tnt/
   config.json          commands the gates run, git and limit settings
   project.md           architecture, conventions, functional-test approach
-  .gitignore           keeps local files out of git: active.json (this checkout's feature), view.html
+  .gitignore           keeps local files out of git: active.json (this checkout's feature), view.html, reviews/
   _project/
     ledger.jsonl       hash chain for init, baseline and project probes (CLI-only)
     evidence/          baseline logs (CLI-only)
@@ -110,6 +111,39 @@ gates belong to which version. Diffs come from the trees the harness recorded. T
 that were never committed are eventually pruned by `git gc`, and the page then says
 the diff is no longer available. The page is generated from the ledger and is never
 used as evidence.
+
+## Reviewing a change built outside tnt
+
+Not every change you review was built with tnt: a colleague's pull request, say.
+`/tnt:review-non-tnt-feature <PR number | branch | commit>` runs a review subflow on
+it with the same evidence machinery:
+
+| Check | Decided from |
+|---|---|
+| spec | the change's claims, written by the `claims-analyst` agent from its description and diff, each with an `Expect:` pattern; you approve them |
+| tests | the configured full suite, run on the change exactly as submitted |
+| style | every configured style command on the change |
+| review | an independent `code-reviewer` (plus `external_review` if configured), with quotes checked against the code; claims the change's own tests don't cover are major findings |
+| functional | black-box runs per claim, matched against the approved `Expect:` patterns |
+| audit | `tnt verify` re-runs everything and each run must reproduce its recorded outcome, failures included; then a fresh auditor judges whether the evidence backs every pass and finding |
+
+The difference from building a feature: you never fix the change. A check is
+**decided** either way, passing or with findings against the change, so a broken
+pull request still gets a complete review. A check stays **undecided** (the gate exits
+1) only while its evidence is missing or invalid, for example when it was recorded on
+other code. After the audit the review gets a verdict, `approve` or `changes_requested`,
+and `report.md` lists every finding with its log or `file:line`. `tnt view` shows the
+timeline next to your features.
+
+Reviews live in `.tnt/reviews/R-…/`, which is git-ignored, and they never commit,
+push or post anything. The skill checks out the change detached and returns you to
+your branch at the end. It offers to draft review comments, but posts nothing without
+your approval of the text.
+
+Under the hood: `tnt review new "<title>" --target <ref> [--base <ref>]`, `tnt approve <R>`,
+`tnt start <R>` (with the change checked out), `tnt run <R> tests|style|functional`,
+`tnt review submit|external <R>`, `tnt verify <R>`, `tnt audit submit <R>` and
+`tnt gate <R> <check>`.
 
 ## What counts as functional proof
 
@@ -172,7 +206,7 @@ deep reasoning where the step needs it:
 
 | Model | Agents | Why |
 |---|---|---|
-| inherit (your session model) | `architect`, `planner`, `code-reviewer`, `evidence-auditor` | design, specs and independent judgement: a weak spec or a missed review finding costs more than the tokens |
+| inherit (your session model) | `architect`, `planner`, `claims-analyst`, `code-reviewer`, `evidence-auditor` | design, specs and independent judgement: a weak spec or a missed review finding costs more than the tokens |
 | `sonnet` | `test-author`, `implementer`, `functional-tester`, `scaffolder`, `codebase-analyst` | well-scoped work against a spec, checked by a gate afterwards |
 | `haiku` | `style-verifier` | runs the configured linters and reports their output |
 

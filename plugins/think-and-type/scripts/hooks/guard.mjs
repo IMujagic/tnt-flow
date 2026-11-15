@@ -24,12 +24,16 @@ const PROTECTED = [
   /^\.tnt\/_project\/(ledger\.jsonl$|evidence\/)/,
   /^\.tnt\/features\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
   /^\.tnt\/features\/[^/]+\/evidence\//,
+  /^\.tnt\/reviews\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
+  /^\.tnt\/reviews\/[^/]+\/evidence\//,
 ];
+// Agents that may write only these files (verifiers, and the claims analyst of a review).
 const VERIFIER_WRITABLE = {
-  'code-reviewer': [/^\.tnt\/features\/[^/]+\/review\.draft\.json$/],
-  'evidence-auditor': [/^\.tnt\/features\/[^/]+\/audit\.draft\.json$/],
-  'functional-tester': [/^\.tnt\/features\/[^/]+\/functional\//],
+  'code-reviewer': [/^\.tnt\/(features|reviews)\/[^/]+\/review\.draft\.json$/],
+  'evidence-auditor': [/^\.tnt\/(features|reviews)\/[^/]+\/audit\.draft\.json$/],
+  'functional-tester': [/^\.tnt\/(features|reviews)\/[^/]+\/functional\//],
   'style-verifier': [],
+  'claims-analyst': [/^\.tnt\/reviews\/[^/]+\/spec\.md$/],
 };
 const LOCK_PHASES = new Set(['red', 'green', 'style', 'review', 'functional', 'audit', 'done']);
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -99,7 +103,7 @@ if (FILE_TOOLS.has(tool)) {
   const rel = posix(path.relative(root, path.resolve(input.cwd || root, target)));
   if (rel.startsWith('..')) process.exit(0);
   if (PROTECTED.some((re) => re.test(rel))) deny(`${rel} is written only by the tnt CLI. Record evidence with \`tnt run\`, \`tnt review submit\` or \`tnt audit submit\` instead.`);
-  if (agent in VERIFIER_WRITABLE && !VERIFIER_WRITABLE[agent].some((re) => re.test(rel))) deny(`${agent} is a verifier and must not modify ${rel}. Report the problem as a finding; the orchestrator routes fixes to a producer step.`);
+  if (agent in VERIFIER_WRITABLE && !VERIFIER_WRITABLE[agent].some((re) => re.test(rel))) deny(`${agent} may only write its own files and must not modify ${rel}. Report the problem as a finding; the orchestrator routes fixes to a producer step.`);
   if (locked.has(rel)) deny(`${rel} is a locked acceptance test (red gate passed). Implementation must satisfy the tests as written. If the test itself is wrong, stop and report it; the orchestrator decides whether to \`tnt unlock\`.`);
   process.exit(0);
 }
@@ -115,7 +119,7 @@ if (SHELL_TOOLS.has(tool)) {
     if (git) deny(`\`${git}\` is not a step's job: the harness commits, the orchestrator merges, and changes are never discarded or history rewritten. Report what you need instead.`);
   }
   if (writes(cmd)) {
-    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
+    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|(features|reviews)\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
       deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
     }
     for (const file of locked) {

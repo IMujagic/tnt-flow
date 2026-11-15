@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   TNT_DIR, GATES, PROJECT_FEATURE, git, head, treeHash, loadConfig, readJson, readLedger, verifyLedger,
-  projectDir, listFeatures, resolveFeature, specPath, ensureLocalIgnores, relPath,
+  projectDir, listFeatures, listReviews, gatesOf, resolveFeature, specPath, ensureLocalIgnores, relPath,
 } from './core.mjs';
 
 const LOG_LIMIT = 24000;
@@ -112,13 +112,14 @@ function collectFeature(root, f) {
     branch: state.branch, baseBranch: state.baseBranch ?? null, base: state.base, syncedBase: state.syncedBase ?? null,
     approval: state.approval, gates: state.gates, attempts: state.attempts, waivers: state.waivers, unlocks: state.unlocks,
     lockedTests: state.locked ? Object.keys(state.locked.files) : [], spec,
+    kind: state.kind ?? 'feature', checks: gatesOf(state), verdict: state.verdict ?? null, target: state.target ?? null,
     integrity, entries, versions, transitions,
   };
 }
 
 export function collectView(root, refs = []) {
   const config = loadConfig(root);
-  const features = refs.length ? refs.map((r) => resolveFeature(root, r)) : listFeatures(root);
+  const features = refs.length ? refs.map((r) => resolveFeature(root, r)) : [...listFeatures(root), ...listReviews(root)];
   return {
     generatedAt: new Date().toISOString(), project: config.project, head: head(root), tree: treeHash(root), gates: GATES,
     projectLedger: { id: PROJECT_FEATURE, ...collectScope(root, projectDir(root)) },
@@ -183,7 +184,8 @@ nav button:focus-visible, summary:focus-visible, select:focus-visible { outline:
 .small { font-size: 0.82rem; }
 .gatebar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
 .gatebar span { height: 6px; border-radius: 3px; background: var(--line); }
-.gatebar span.pass { background: var(--pass); } .gatebar span.waived { background: var(--human); }
+.gatebar span.pass { background: var(--pass); } .gatebar span.waived { background: var(--human); } .gatebar span.fail { background: var(--fail); }
+.gatebar.big span.fail { background: var(--fail-soft); color: var(--fail); border-color: transparent; font-weight: 600; }
 .gatebar.big span { height: auto; padding: 6px 4px; font-size: 0.75rem; text-align: center; color: var(--muted); background: var(--surface); border: 1px solid var(--line); }
 .gatebar.big span.pass { background: var(--pass-soft); color: var(--pass); border-color: transparent; font-weight: 600; }
 .gatebar.big span.waived { background: var(--human-soft); color: var(--human); border-color: transparent; font-weight: 600; }
@@ -287,9 +289,12 @@ const JS = String.raw`
     switch (e.type) {
       case 'init': d.title = 'Harness initialised (' + (e.projectType || '') + ')'; break;
       case 'feature-created': d.title = 'Feature created: ' + e.title; break;
-      case 'approve': d.title = 'Spec approved by ' + e.by; d.kind = 'human'; d.status = pill('human', 'human');
+      case 'review-created': d.title = 'Review created: ' + e.title;
+        d.extra.push(h('div', { class: 'small muted' }, ['Change ', h('code', { text: e.target }), ' at ', h('code', { text: short(e.commit) }), ' against ', h('code', { text: e.baseRef }), ' (merge base ', h('code', { text: short(e.base) }), ')'])); break;
+      case 'approve': d.title = (String(e.feature).indexOf('R-') === 0 ? 'Claims' : 'Spec') + ' approved by ' + e.by; d.kind = 'human'; d.status = pill('human', 'human');
         d.extra.push(h('div', { class: 'small muted' }, ['Spec hash ', h('code', { text: short(e.specSha) }), ' · ACs: ' + (e.acs || []).join(', ')])); break;
-      case 'start': d.title = 'Started' + (e.branch ? ' on ' + e.branch : '') ; d.extra.push(h('div', { class: 'small muted' }, ['Base commit ', h('code', { text: short(e.base) })])); break;
+      case 'start': d.title = 'Started' + (e.branch ? ' on ' + e.branch : '');
+        d.extra.push(h('div', { class: 'small muted' }, e.commit ? ['Reviewing commit ', h('code', { text: short(e.commit) })] : ['Base commit ', h('code', { text: short(e.base) })])); break;
       case 'lock-tests': d.title = 'Locked ' + Object.keys(e.files || {}).length + ' test file(s)';
         d.extra.push(h('ul', { class: 'plain small' }, Object.keys(e.files || {}).map(function (k) { return h('li', null, [h('code', { text: k }), ' ', h('span', { class: 'muted mono', text: short(e.files[k]) })]); }))); break;
       case 'unlock': d.title = 'Tests unlocked: ' + e.reason; d.kind = 'human'; d.status = pill('human', 'human'); break;
@@ -307,8 +312,10 @@ const JS = String.raw`
         else if (e.log) d.extra.push(h('div', { class: 'problem', text: 'Log file missing: ' + e.log }));
         break;
       case 'gate':
-        d.title = 'Gate ' + e.gate; d.status = pill(e.pass ? 'PASS' : 'FAIL', e.pass ? 'pass' : 'fail');
+        d.title = (e.decided === undefined ? 'Gate ' : 'Check ') + e.gate;
+        d.status = e.decided === false ? pill('NOT DECIDED', 'info') : e.findings ? pill('FINDINGS', 'fail') : pill(e.pass ? 'PASS' : 'FAIL', e.pass ? 'pass' : 'fail');
         if (!e.pass && e.reasons) d.extra.push(h('ul', { class: 'plain small' }, e.reasons.map(function (r) { return h('li', { text: r }); })));
+        if (e.findings) d.extra.push(h('ul', { class: 'plain small' }, e.findings.map(function (r) { return h('li', { class: 'problem', text: r }); })));
         break;
       case 'review':
         d.title = 'Code review: ' + e.verdict.replace('_', ' '); d.status = pill(e.verdict === 'approve' ? 'approve' : 'changes', e.verdict === 'approve' ? 'pass' : 'fail');
@@ -355,8 +362,8 @@ const JS = String.raw`
   }
 
   function gatebar(f, big) {
-    return h('div', { class: 'gatebar' + (big ? ' big' : '') }, data.gates.map(function (g) {
-      var s = f.gates && f.gates[g]; return h('span', { class: s ? (s.waived ? 'waived' : 'pass') : '', title: g, text: big ? g : null });
+    return h('div', { class: 'gatebar' + (big ? ' big' : '') }, (f.checks || data.gates).map(function (g) {
+      var s = f.gates && f.gates[g]; return h('span', { class: s ? (s.waived ? 'waived' : s.pass === false ? 'fail' : 'pass') : '', title: g, text: big ? g : null });
     }));
   }
 
@@ -366,7 +373,9 @@ const JS = String.raw`
     main.appendChild(h('div', { class: 'card title' }, [
       h('h2', { text: f.id + ' · ' + f.title }),
       h('div', { class: 'meta muted' }, [h('span', { text: 'Phase: ' + f.phase }), f.branch ? h('span', null, ['Branch ', h('code', { text: f.branch })]) : null,
-        f.approval ? h('span', { text: 'Spec approved by ' + f.approval.by }) : null, h('span', null, ['Ledger ', h('code', { text: f.dir + '/ledger.jsonl' })])]),
+        f.target ? h('span', null, ['Review of ', h('code', { text: f.target.ref }), ' against ', h('code', { text: f.target.baseRef })]) : null,
+        f.kind === 'review' ? pill(f.verdict ? 'verdict: ' + f.verdict.replace('_', ' ') : 'verdict pending', f.verdict === 'approve' ? 'pass' : f.verdict ? 'fail' : 'info') : null,
+        f.approval ? h('span', { text: (f.kind === 'review' ? 'Claims' : 'Spec') + ' approved by ' + f.approval.by }) : null, h('span', null, ['Ledger ', h('code', { text: f.dir + '/ledger.jsonl' })])]),
       h('div', { style: 'margin-top:12px' }, [gatebar(f, true)])
     ]));
     main.appendChild(f.integrity.ok ? h('div', { class: 'alert ok', text: 'Ledger intact: ' + f.integrity.count + ' entries, every hash, link and evidence file checks out.' })

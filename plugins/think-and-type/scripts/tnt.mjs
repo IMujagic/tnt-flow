@@ -3,7 +3,7 @@
 // backed by something this tool recorded. Run `tnt help` for usage.
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { TntError, requireRoot, GATES, PROJECT_FEATURE, loadConfig, verifyAllLedgers, resolveFeature } from './lib/core.mjs';
+import { TntError, requireRoot, GATES, REVIEW_CHECKS, PROJECT_FEATURE, loadConfig, verifyAllLedgers, resolveFeature } from './lib/core.mjs';
 import * as h from './lib/harness.mjs';
 import { writeView } from './lib/view.mjs';
 
@@ -53,6 +53,14 @@ Reporting
   tnt report <F>                                    write features/<F>/report.md
   tnt view [<F>...] [--out <file>] [--open]         write .tnt/view.html: the ledger as a browsable timeline with code diffs
 
+Reviews of changes built outside tnt (checks: ${REVIEW_CHECKS.join(' > ')})
+  tnt review new "<title>" --target <ref> [--base <ref>]   create R-xxx for a branch, commit or fetched PR head (local, git-ignored)
+  tnt approve <R> --by "<human>"                    approve the change's claims in its spec.md
+  tnt start <R>                                     with the change checked out (detached, no local edits): record its tree
+  tnt run <R> tests | style | functional ...        record evidence on the change (tests = commands.test)
+  tnt review submit|external <R>, tnt verify <R>, tnt audit submit <R> ...   as for features
+  tnt gate <R> <check>                              decide a check: pass or findings against the change (exit 0); exit 1 = evidence missing
+
 Global: --json for machine-readable output.`;
 
 function parse(argv) {
@@ -81,11 +89,21 @@ function out(flags, data, text) {
 const runLine = (r) => `#${r.seq} ${r.step}${r.name ? ':' + r.name : ''}${r.ac ? ' ' + r.ac : ''} exit=${r.exit}${r.timedOut ? ' TIMEOUT' : ''}${r.mutated ? ' MUTATED-TREE' : ''}${r.expect ? ` expect=${r.expectMatched ? 'matched' : 'NOT-matched'}` : ''}  log=${r.log}`;
 
 function gateText(r) {
+  if (r.kind === 'review') return reviewGateText(r);
   const head = `gate ${r.gate} for ${r.feature}: ${r.pass ? 'PASS' : 'FAIL'} (ledger #${r.seq}, phase=${r.phase})`;
   const commit = r.commit?.sha ? `\ncommitted ${r.commit.sha.slice(0, 10)}` : r.commit?.error ? `\nWARNING: auto-commit failed: ${r.commit.error}` : '';
   if (r.pass) return head + commit;
   const limit = r.attempts >= r.maxIterations ? `\nattempt ${r.attempts}/${r.maxIterations}: iteration limit reached, escalate to the human` : `\nattempt ${r.attempts}/${r.maxIterations}`;
   return `${head}\n${r.reasons.map((x) => '  - ' + x).join('\n')}${limit}`;
+}
+
+function reviewGateText(r) {
+  const state = !r.decided ? 'NOT DECIDED (evidence missing or invalid)' : r.pass ? 'PASS' : 'FINDINGS';
+  const head = `check ${r.gate} for ${r.feature}: ${state} (ledger #${r.seq}, phase=${r.phase})`;
+  const lines = [head, ...r.reasons.map((x) => '  - ' + x)];
+  if (r.verdict) lines.push(`verdict: ${r.verdict}`);
+  if (!r.decided) lines.push(`attempt ${r.attempts}/${r.maxIterations}${r.attempts >= r.maxIterations ? ': iteration limit reached, escalate to the human' : ''}`);
+  return lines.join('\n');
 }
 
 function main(argv) {
@@ -123,8 +141,12 @@ function main(argv) {
       out(flags, r, `created ${r.id}: edit ${r.dir}/spec.md`);
       return 0;
     }
-    case 'approve': { const r = h.approve(root, args[0], { by: flags.by }); out(flags, r, gateText); return r.pass ? 0 : 1; }
-    case 'start': { const r = h.start(root, args[0]); out(flags, r, `${r.feature} started${r.alreadyStarted ? ' (already)' : ''}; branch=${r.branch ?? '—'} base=${r.base || '(root)'}`); return 0; }
+    case 'approve': { const r = h.approve(root, args[0], { by: flags.by }); out(flags, r, gateText); return (r.kind === 'review' ? r.decided : r.pass) ? 0 : 1; }
+    case 'start': {
+      const r = h.start(root, args[0]);
+      out(flags, r, r.kind === 'review' ? `${r.feature} started${r.alreadyStarted ? ' (already)' : ''} on ${r.commit.slice(0, 10)}, tree ${r.tree.slice(0, 10)}` : `${r.feature} started${r.alreadyStarted ? ' (already)' : ''}; branch=${r.branch ?? '—'} base=${r.base || '(root)'}`);
+      return 0;
+    }
     case 'lock-tests': {
       const r = h.lockTests(root, args[0], args.slice(1), { replace: flags.replace });
       out(flags, r, `locked (ledger #${r.seq}):\n${Object.keys(r.files).map((x) => '  ' + x).join('\n')}`);
@@ -144,7 +166,14 @@ function main(argv) {
       // `-- "<full command string>"` is used verbatim; several words are re-quoted for the shell.
       const userCmd = rest?.length === 1 ? rest[0] : rest?.length ? rest.map(quote).join(' ') : flags.cmd;
       let runs;
-      if (step === 'red' || step === 'green') {
+      const isReview = f.state?.kind === 'review';
+      if (isReview && (step === 'red' || step === 'green')) throw new TntError(`${f.id} is a review: record the suite with \`tnt run ${f.id} tests\``);
+      if (step === 'tests') {
+        if (!isReview) throw new TntError('features record the suite with `run <F> red` or `run <F> green`; `tests` is for reviews (R-…)');
+        if (userCmd) throw new TntError('tests always runs commands.test (the full suite); do not pass a command');
+        if (!config.commands.test) throw new TntError('commands.test is not configured');
+        runs = [h.execRecorded(root, { feature: f.id, featureDir: f.dir, step, cmd: config.commands.test })];
+      } else if (step === 'red' || step === 'green') {
         if (userCmd) throw new TntError(`${step} always runs commands.test (the full suite); do not pass a command`);
         if (!config.commands.test) throw new TntError('commands.test is not configured');
         runs = [h.execRecorded(root, { feature: f.id, featureDir: f.dir, step, cmd: config.commands.test })];
@@ -162,11 +191,11 @@ function main(argv) {
       } else if (step === 'probe') {
         if (!userCmd) throw new TntError('probe needs -- <command>');
         runs = [h.execRecorded(root, { feature: f.id, featureDir: f.dir, step, cmd: userCmd, expect: flags.expect, artifacts: flags.artifact })];
-      } else throw new TntError('step must be red, green, style, functional or probe');
+      } else throw new TntError('step must be red, green, style, functional or probe (tests for reviews)');
       out(flags, runs, () => runs.map(runLine).join('\n'));
       return 0; // recording succeeded; pass/fail is judged by `tnt gate`
     }
-    case 'gate': { const r = h.gate(root, args[0], args[1]); out(flags, r, gateText); return r.pass ? 0 : 1; }
+    case 'gate': { const r = h.gate(root, args[0], args[1]); out(flags, r, gateText); return (r.kind === 'review' ? r.decided : r.pass) ? 0 : 1; }
     case 'check': {
       const r = h.check(root, args[0], args[1]);
       out(flags, r, () => `check ${r.gate} for ${r.feature}: ${r.pass ? 'PASS' : 'FAIL'} (dry run, nothing recorded)${r.reasons.map((x) => '\n  - ' + x).join('')}`);
@@ -175,6 +204,11 @@ function main(argv) {
     case 'waive': { const r = h.waive(root, args[0], args[1], { reason: flags.reason, by: flags.by }); out(flags, r, `${args[1]} WAIVED for ${r.id} by ${flags.by}`); return 0; }
     case 'review':
     case 'audit': {
+      if (cmd === 'review' && args[0] === 'new') {
+        const r = h.newReview(root, args.slice(1).join(' '), { target: flags.target, base: flags.base });
+        out(flags, r, `created review ${r.id} of ${r.commit.slice(0, 10)} (merge base ${r.base.slice(0, 10)} with ${r.baseRef}): write the change's claims in ${r.dir}/spec.md`);
+        return 0;
+      }
       if (cmd === 'review' && args[0] === 'external') {
         const r = h.externalReview(root, args[1]);
         out(flags, r, `external review recorded (ledger #${r.seq}, run #${r.run}): verdict=${r.verdict}, saved ${r.file}`);
@@ -201,9 +235,12 @@ function main(argv) {
     }
     case 'status': {
       const r = h.status(root, args[0]);
-      out(flags, r, () => (args[0]
+      const checkLine = (g) => { const s = r.gates[g]; return `${g}:${!s ? 'pending' : s.waived ? 'WAIVED' : s.pass === false ? 'FINDINGS' : 'pass'}${s ? '#' + s.seq : ''}`; };
+      out(flags, r, () => (args[0] && r.kind === 'review'
+        ? `${r.id} ${r.title} (review of ${r.target.ref} at ${r.target.commit.slice(0, 10)}, base ${r.target.baseRef})\n  phase: ${r.phase}  next check: ${r.nextGate ?? '—'}  started: ${r.started}  verdict: ${r.verdict ?? 'pending'}\n  claims: ${r.acs.join(', ') || '—'}\n  checks: ${r.checks.map(checkLine).join(' ')}\n  attempts: ${JSON.stringify(r.attempts)}`
+        : args[0]
         ? `${r.id} ${r.title}\n  phase: ${r.phase}  next gate: ${r.nextGate ?? '—'}  started: ${r.started}  branch: ${r.branch ?? '—'}\n  ACs: ${r.acs.join(', ') || '—'}\n  locked tests: ${r.lockedTests.join(', ') || '—'}\n  passed: ${Object.entries(r.gates).map(([g, s]) => `${g}#${s.seq}${s.waived ? '(WAIVED)' : ''}`).join(' ') || '—'}\n  attempts: ${JSON.stringify(r.attempts)}`
-        : `${r.project.name} (${r.project.type})  active: ${r.active ?? '—'}\n${r.features.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.waivers ? '  [waivers]' : ''}`).join('\n') || '  no features yet'}`));
+        : `${r.project.name} (${r.project.type})  active: ${r.active ?? '—'}\n${r.features.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.waivers ? '  [waivers]' : ''}`).join('\n') || '  no features yet'}${r.reviews.length ? '\nreviews of non-tnt changes (local)\n' + r.reviews.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.verdict ? '  verdict: ' + x.verdict : ''}`).join('\n') : ''}`));
       return 0;
     }
     case 'report': { const p = h.writeReport(root, args[0]); out(flags, { path: p }, `wrote ${p}`); return 0; }

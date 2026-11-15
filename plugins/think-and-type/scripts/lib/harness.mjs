@@ -12,7 +12,7 @@ import {
   projectDir, scopeDir, FEATURE_ID, ensureLocalIgnores,
   featuresDir, listFeatures, resolveFeature, loadState, saveState, specPath, evidenceDir,
   activePath, readActive, SPEC_TEMPLATE, slugify, parseAcceptanceCriteria, acRegex, fileSha, relPath,
-  parseSpecExpectations, weakExpectation,
+  parseSpecExpectations, weakExpectation, REVIEW_CHECKS, gatesOf, reviewsDir, REVIEW_SPEC_TEMPLATE, listReviews,
 } from './core.mjs';
 import os from 'node:os';
 
@@ -147,7 +147,7 @@ export function baseline(root) {
 // Crockford base32 (no I, L, O, U): 6 characters give about a billion ids, so
 // features planned on different branches don't collide when they merge.
 const ID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const randomId = () => 'F-' + [...crypto.randomBytes(6)].map((b) => ID_ALPHABET[b % 32]).join('');
+const randomId = (prefix = 'F-') => prefix + [...crypto.randomBytes(6)].map((b) => ID_ALPHABET[b % 32]).join('');
 
 export function newFeature(root, title, { id: wanted } = {}) {
   if (!title || !title.trim()) throw new TntError('feature title required');
@@ -208,6 +208,7 @@ export function approve(root, ref, { by }) {
 
 export function start(root, ref) {
   const f = resolveFeature(root, ref);
+  if (f.state.kind === 'review') return startReview(root, f);
   const config = loadConfig(root);
   const state = loadState(f.dir);
   if (!state.gates.spec) throw new TntError(`${f.id}: spec gate not passed; get the spec approved first`);
@@ -237,6 +238,7 @@ export function start(root, ref) {
 
 export function lockTests(root, ref, files, { replace = false } = {}) {
   const f = resolveFeature(root, ref);
+  featureOnly(f, '`tnt lock-tests`');
   const state = loadState(f.dir);
   if (!state.gates.spec) throw new TntError(`${f.id}: spec gate not passed`);
   if (state.gates.red) throw new TntError(`${f.id}: tests are locked by the red gate; ask the orchestrator to \`tnt unlock\` with a reason`);
@@ -258,6 +260,7 @@ export function lockTests(root, ref, files, { replace = false } = {}) {
 export function unlock(root, ref, { reason }) {
   if (!reason) throw new TntError('--reason is required');
   const f = resolveFeature(root, ref);
+  featureOnly(f, '`tnt unlock`');
   const state = loadState(f.dir);
   if (!state.gates.red) throw new TntError(`${f.id}: tests are not locked`);
   const e = appendLedger(f.dir, { type: 'unlock', feature: f.id, reason });
@@ -271,7 +274,12 @@ export function unlock(root, ref, { reason }) {
 // ---------------------------------------------------------------- gates
 
 function clearFrom(state, g) {
-  for (const x of GATES.slice(GATES.indexOf(g))) delete state.gates[x];
+  const list = gatesOf(state);
+  for (const x of list.slice(list.indexOf(g))) delete state.gates[x];
+}
+
+function featureOnly(f, what) {
+  if (f.state.kind === 'review') throw new TntError(`${f.id} is a review of a change built outside tnt; ${what} applies to features only`);
 }
 
 const latest = (entries, pred) => { for (let i = entries.length - 1; i >= 0; i--) if (pred(entries[i])) return entries[i]; return null; };
@@ -443,11 +451,15 @@ function evaluate(root, ref, g) {
 // entry, no state change, no commit, no attempt counted. Only the
 // orchestrator calls `gate`.
 export function check(root, ref, g) {
+  const rf = resolveFeature(root, ref);
+  if (rf.state.kind === 'review') { const { reasons, missing, findings, decided } = reviewEvaluate(root, rf, g); return { feature: rf.id, gate: g, pass: decided && !findings.length, decided, reasons, missing, findings, dryRun: true }; }
   const { f, reasons } = evaluate(root, ref, g);
   return { feature: f.id, gate: g, pass: reasons.length === 0, reasons, dryRun: true };
 }
 
 export function gate(root, ref, g) {
+  const rf = resolveFeature(root, ref);
+  if (rf.state.kind === 'review') return reviewGate(root, rf, g);
   const { f, ctx, reasons } = evaluate(root, ref, g);
   const pass = reasons.length === 0;
   const e = appendLedger(f.dir, { type: 'gate', feature: f.id, gate: g, pass, tree: ctx.tree, reasons: pass ? undefined : reasons });
@@ -477,13 +489,15 @@ export function waive(root, ref, g, { reason, by }) {
   if (!reason || !by) throw new TntError('--reason and --by are required: a waiver is a recorded human decision');
   const f = resolveFeature(root, ref);
   const ctx = gateContext(root, f);
-  const idx = GATES.indexOf(g);
+  const list = gatesOf(ctx.state);
+  const idx = list.indexOf(g);
   if (idx < 1) throw new TntError(`gate "${g}" cannot be waived`);
-  for (const prev of GATES.slice(0, idx)) if (!ctx.state.gates[prev]) throw new TntError(`gate "${prev}" has not passed yet`);
+  for (const prev of list.slice(0, idx)) if (!ctx.state.gates[prev]) throw new TntError(`gate "${prev}" has not passed yet`);
   const e = appendLedger(f.dir, { type: 'waive', feature: f.id, gate: g, reason, by, tree: ctx.tree });
   const state = loadState(f.dir);
   clearFrom(state, g);
-  state.gates[g] = { seq: e.seq, tree: ctx.tree, ts: e.ts, waived: true };
+  state.gates[g] = { seq: e.seq, tree: ctx.tree, ts: e.ts, waived: true, pass: true };
+  if (state.kind === 'review' && g === 'audit') state.verdict = reviewVerdict(state);
   state.phase = g === 'audit' ? 'done' : g;
   state.waivers.push({ gate: g, seq: e.seq, reason, by });
   saveState(f.dir, state);
@@ -589,6 +603,7 @@ export function submitAudit(root, ref, file) {
 
 export function verify(root, ref) {
   const f = resolveFeature(root, ref);
+  if (f.state.kind === 'review') return verifyReview(root, f);
   const config = loadConfig(root);
   const state = loadState(f.dir);
   const failures = [];
@@ -706,6 +721,7 @@ export function verifyIntegrated(root, refs = [], { out } = {}) {
 // human relocks those files with a recorded reason.
 export function sync(root, ref, { onto, relock = false, by, reason } = {}) {
   const f = resolveFeature(root, ref);
+  featureOnly(f, '`tnt sync`');
   const state = loadState(f.dir);
   onto ||= state.baseBranch;
   if (!onto) throw new TntError('--onto <ref> is required: the base branch or commit you merged into the feature branch');
@@ -744,6 +760,230 @@ export function sync(root, ref, { onto, relock = false, by, reason } = {}) {
   return { feature: f.id, onto: sha, seq: e.seq, reset, phase: state.phase, relocked: relocked ? Object.keys(relocked) : [] };
 }
 
+// ---------------------------------------------------------------- reviews of changes built outside tnt
+//
+// A review proves what someone else's change does with the same evidence
+// machinery as a feature, but the reviewer never changes the code. A check is
+// *decided* once its evidence is complete: it passes, or it records findings
+// against the change, and the flow moves on, so a failing pull request still
+// gets a full review. A check stays *undecided* while its evidence is missing or
+// invalid (not run, run on other code, timed out), and the gate exits 1.
+
+function defaultBaseRef(root) {
+  const r = git(root, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], { allowFail: true });
+  if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  for (const b of ['main', 'master']) if (git(root, ['rev-parse', '--verify', '-q', `${b}^{commit}`], { allowFail: true }).status === 0) return b;
+  throw new TntError('--base <ref> is required: the branch the change will merge into');
+}
+
+function commitOf(root, ref) {
+  const r = git(root, ['rev-parse', '--verify', '-q', `${ref}^{commit}`], { allowFail: true });
+  if (r.status !== 0) throw new TntError(`unknown ref ${ref}; fetch it first (for a pull request: git fetch origin pull/<n>/head)`);
+  return r.stdout.trim();
+}
+
+export function newReview(root, title, { target, base } = {}) {
+  if (!title || !title.trim()) throw new TntError('review title required');
+  if (!target) throw new TntError('--target <ref> is required: the branch, commit or fetched pull request head to review');
+  const commit = commitOf(root, target);
+  const baseRef = base || defaultBaseRef(root);
+  const mb = git(root, ['merge-base', commitOf(root, baseRef), commit], { allowFail: true });
+  if (mb.status !== 0) throw new TntError(`${target} and ${baseRef} share no history`);
+  const mergeBase = mb.stdout.trim();
+  const taken = new Set(listReviews(root).map((r) => r.id));
+  let id;
+  do id = randomId('R-'); while (taken.has(id));
+  const dir = path.join(reviewsDir(root), `${id}-${slugify(title)}`);
+  fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
+  ensureLocalIgnores(root);
+  const t = { ref: target, commit, baseRef };
+  fs.writeFileSync(specPath(dir), REVIEW_SPEC_TEMPLATE(id, title.trim(), t));
+  saveState(dir, {
+    kind: 'review', id, title: title.trim(), created: new Date().toISOString(), phase: 'draft', gates: {}, attempts: {},
+    approval: null, target: t, base: mergeBase, tree: null, verdict: null, locked: null, syncedBase: null, branch: null, unlocks: [], waivers: [],
+  });
+  appendLedger(dir, { type: 'review-created', feature: id, title: title.trim(), target, commit, baseRef, base: mergeBase });
+  return { id, dir: relPath(root, dir), commit, base: mergeBase, baseRef };
+}
+
+function startReview(root, f) {
+  const state = loadState(f.dir);
+  if (!state.gates.spec) throw new TntError(`${f.id}: the claims in spec.md are not approved yet`);
+  if (state.tree) return { feature: f.id, kind: 'review', alreadyStarted: true, commit: state.target.commit, tree: state.tree };
+  if (head(root) !== state.target.commit) throw new TntError(`check out the change first: git switch --detach ${state.target.commit}`);
+  if (!isClean(root)) throw new TntError('the working tree has local changes; a review runs on the change exactly as submitted');
+  state.tree = treeHash(root);
+  saveState(f.dir, state);
+  appendLedger(f.dir, { type: 'start', feature: f.id, commit: state.target.commit, tree: state.tree });
+  return { feature: f.id, kind: 'review', commit: state.target.commit, tree: state.tree };
+}
+
+const REVIEW_EVALUATORS = {
+  spec: (ctx) => ({ missing: EVALUATORS.spec(ctx), findings: [] }),
+  tests({ ledger, tree, f, config }) {
+    if (!config.commands.test) return { missing: ['commands.test is not configured'], findings: [] };
+    const run = latest(ledger, (e) => e.type === 'run' && e.feature === f.id && e.step === 'tests');
+    const missing = runIssues(run, tree, 'tests');
+    const findings = !missing.length && run.exit !== 0 ? [`the test suite fails on this change (run #${run.seq}, exit ${run.exit}); see ${run.log}`] : [];
+    return { missing, findings };
+  },
+  style({ ledger, tree, f, config }) {
+    if (!config.style.length) return { missing: ['config.style is empty, so there is no style check to run; waive the check if the project has none'], findings: [] };
+    const missing = [];
+    const findings = [];
+    for (const name of config.style) {
+      if (!config.commands[name]) { missing.push(`commands.${name} is not configured`); continue; }
+      const run = latest(ledger, (e) => e.type === 'run' && e.feature === f.id && e.step === 'style' && e.name === name && e.tree === tree);
+      const m = runIssues(run, tree, `style:${name}`);
+      missing.push(...m);
+      if (!m.length && run.exit !== 0) findings.push(`style:${name} fails on this change (run #${run.seq}, exit ${run.exit}); see ${run.log}`);
+    }
+    return { missing, findings };
+  },
+  review({ ledger, tree, f, config }) {
+    const missing = [];
+    const findings = [];
+    const judge = (r, label, how) => {
+      if (!r) missing.push(`no ${label} recorded (${how})`);
+      else if (r.tree !== tree) missing.push(`${label} #${r.seq} covers other code; review again`);
+      else if (r.verdict !== 'approve') findings.push(`${label} #${r.seq} requested changes (${r.counts.blocking} blocking, ${r.counts.major} major, ${r.counts.minor} minor); see ${r.file}`);
+    };
+    judge(latest(ledger, (e) => e.type === 'review' && e.feature === f.id && !e.source), 'review', '`tnt review submit`');
+    if (config.commands.external_review) {
+      judge(latest(ledger, (e) => e.type === 'review' && e.feature === f.id && e.source === 'external'), 'external review', '`tnt review external`; commands.external_review is configured');
+    }
+    return { missing, findings };
+  },
+  functional({ spec, ledger, tree, f }) {
+    const missing = [];
+    const findings = [];
+    for (const ac of spec.acs) {
+      const runs = functionalRuns(ledger, f.id, ac.id, tree);
+      if (!runs.length) { missing.push(`${ac.id}: no functional evidence recorded`); continue; }
+      const broken = runs.flatMap((run) => runIssues(run, tree, `functional ${ac.id}`));
+      if (broken.length) { missing.push(...broken); continue; }
+      for (const run of runs) {
+        if (run.exit !== 0) findings.push(`${ac.id}: functional run #${run.seq} exited ${run.exit}; see ${run.log}`);
+        else if (run.expectMatched !== true) findings.push(`${ac.id}: functional run #${run.seq} did not show /${run.expect}/; see ${run.log}`);
+      }
+      for (const pattern of spec.expects.get(ac.id) ?? []) {
+        if (!runs.some((run) => run.specExpect?.some((x) => x.pattern === pattern && x.matched))) findings.push(`${ac.id}: the claimed outcome /${pattern}/ was not observed in any functional run`);
+      }
+    }
+    return { missing, findings };
+  },
+  audit({ ledger, tree, f }) {
+    const missing = [];
+    const findings = [];
+    const v = latest(ledger, (e) => e.type === 'verify' && e.feature === f.id);
+    if (!v) missing.push('no `tnt verify` recorded');
+    else if (v.tree !== tree) missing.push(`verify #${v.seq} ran on other code`);
+    else if (!v.ok) {
+      const ledgerProblems = v.failures.filter((x) => x.startsWith('ledger'));
+      if (ledgerProblems.length) missing.push(`verify #${v.seq}: ${ledgerProblems.join('; ')}`);
+      else findings.push(`the evidence did not reproduce (verify #${v.seq}): ${v.failures.join('; ')}`);
+    }
+    const a = latest(ledger, (e) => e.type === 'audit-report' && e.feature === f.id);
+    if (!a) missing.push('no audit report submitted (`tnt audit submit`)');
+    else if (a.tree !== tree) missing.push(`audit report #${a.seq} covers other code`);
+    else if (a.verdict !== 'pass') findings.push(`the audit found that the evidence does not support the checks (#${a.seq}); see ${a.file}`);
+    return { missing, findings };
+  },
+};
+
+function reviewEvaluate(root, f, g) {
+  if (!REVIEW_CHECKS.includes(g)) throw new TntError(`unknown check "${g}" for a review; one of ${REVIEW_CHECKS.join(', ')}`);
+  const ctx = gateContext(root, f);
+  const { state, spec, tree } = ctx;
+  const out = (missing, findings = []) => ({ ctx, missing, findings, decided: missing.length === 0, reasons: missing.length ? missing : findings });
+  for (const prev of REVIEW_CHECKS.slice(0, REVIEW_CHECKS.indexOf(g))) if (!state.gates[prev]) return out([`check "${prev}" has not been decided yet`]);
+  if (g !== 'spec') {
+    const p = [];
+    if (!state.approval || state.approval.specSha !== spec.sha) p.push('spec.md changed after approval; re-approve');
+    if (!state.tree) p.push(`review not started: check out ${state.target.commit.slice(0, 10)} and run \`tnt start ${f.id}\``);
+    else if (state.tree !== tree) p.push(`the working tree is not the change under review (${state.target.commit.slice(0, 10)}); check it out again with no local edits`);
+    if (p.length) return out(p);
+  }
+  const { missing, findings } = REVIEW_EVALUATORS[g](ctx);
+  return out(missing, findings);
+}
+
+const reviewVerdict = (state) => (REVIEW_CHECKS.every((g) => state.gates[g]?.pass) ? 'approve' : 'changes_requested');
+
+function reviewGate(root, f, g) {
+  const { ctx, missing, findings, decided, reasons } = reviewEvaluate(root, f, g);
+  const pass = decided && findings.length === 0;
+  const e = appendLedger(f.dir, {
+    type: 'gate', feature: f.id, gate: g, pass, decided, tree: ctx.tree,
+    reasons: missing.length ? missing : undefined, findings: findings.length ? findings : undefined,
+  });
+  const state = loadState(f.dir);
+  if (decided) {
+    clearFrom(state, g);
+    state.gates[g] = { seq: e.seq, tree: ctx.tree, ts: e.ts, pass, findings: findings.length ? findings : undefined };
+    state.phase = g === 'audit' ? 'done' : g;
+    state.attempts[g] = 0;
+    state.verdict = g === 'audit' ? reviewVerdict(state) : null;
+  } else {
+    state.attempts[g] = (state.attempts[g] || 0) + 1;
+  }
+  saveState(f.dir, state);
+  if (decided && g === 'audit') writeReport(root, f.id);
+  return {
+    feature: f.id, gate: g, kind: 'review', decided, pass, reasons, missing, findings, seq: e.seq, phase: state.phase,
+    attempts: state.attempts[g], maxIterations: ctx.config.limits.maxIterations, verdict: state.verdict, commit: null,
+  };
+}
+
+// Re-runs every recorded command of a review on the same code and checks that
+// each reproduces its recorded outcome. A failing run that fails again is
+// reproduced; a run whose outcome flips is flaky evidence, and that is a finding.
+function verifyReview(root, f) {
+  const state = loadState(f.dir);
+  const config = loadConfig(root);
+  const failures = verifyLedger(root, f.dir).errors.map((e) => `ledger: ${e}`);
+  const tree = treeHash(root);
+  if (!state.tree) failures.push('review not started');
+  else if (state.tree !== tree) failures.push('the working tree is not the change under review');
+  const ledger = readLedger(f.dir);
+  const reruns = [];
+  const redo = (label, orig) => {
+    if (!orig) { failures.push(`${label}: nothing recorded to reproduce`); return; }
+    const r = execRecorded(root, { feature: f.id, featureDir: f.dir, step: 'audit', name: orig.name ?? orig.step, ac: orig.ac, cmd: orig.cmd, expect: orig.expect });
+    reruns.push(r.seq);
+    const p = [];
+    if ((orig.exit === 0) !== (r.exit === 0)) p.push(`recorded exit ${orig.exit}, re-run exit ${r.exit}`);
+    if (orig.expect && orig.expectMatched !== r.expectMatched) p.push(`/${orig.expect}/ ${orig.expectMatched ? 'no longer' : 'now'} observed`);
+    for (const x of orig.specExpect ?? []) {
+      const y = r.specExpect?.find((z) => z.pattern === x.pattern);
+      if (y && y.matched !== x.matched) p.push(`claimed outcome /${x.pattern}/ ${x.matched ? 'no longer' : 'now'} observed`);
+    }
+    if (r.mutated) p.push('modified the working tree');
+    if (p.length) failures.push(`${label} (#${orig.seq}, re-run #${r.seq}): ${p.join(', ')}`);
+  };
+  const t = state.tree;
+  const isRun = (e) => e.type === 'run' && e.feature === f.id && e.tree === t;
+  if (!state.gates.tests?.waived) redo('tests', latest(ledger, (e) => isRun(e) && e.step === 'tests'));
+  if (!state.gates.style?.waived) for (const name of config.style) if (config.commands[name]) redo(`style:${name}`, latest(ledger, (e) => isRun(e) && e.step === 'style' && e.name === name));
+  let acs = [];
+  try { acs = specInfo(f.dir).acs; } catch (e) { failures.push(e.message); }
+  for (const ac of acs) for (const run of functionalRuns(ledger, f.id, ac.id, t)) redo(`functional ${ac.id}`, run);
+  const ok = failures.length === 0;
+  const e = appendLedger(f.dir, { type: 'verify', feature: f.id, ok, tree, reruns, failures });
+  return { ok, failures, seq: e.seq, reruns };
+}
+
+function reviewStatus(root, f, state, config) {
+  const next = state.phase === 'done' ? null : REVIEW_CHECKS[REVIEW_CHECKS.indexOf(state.phase) + 1] ?? REVIEW_CHECKS[0];
+  let acs = [];
+  try { acs = specInfo(f.dir).acs.map((a) => a.id); } catch { /* draft */ }
+  return {
+    id: f.id, kind: 'review', title: state.title, dir: relPath(root, f.dir), phase: state.phase, nextGate: next, checks: REVIEW_CHECKS,
+    started: Boolean(state.tree), target: state.target, base: state.base, syncedBase: null, acs, gates: state.gates, attempts: state.attempts,
+    verdict: state.verdict ?? null, lockedTests: [], waivers: state.waivers, unlocks: [], maxIterations: config.limits.maxIterations,
+  };
+}
+
 // ---------------------------------------------------------------- status / report
 
 export function status(root, ref) {
@@ -753,10 +993,12 @@ export function status(root, ref) {
     return {
       project: config.project, active: active?.feature ?? null,
       features: listFeatures(root).map((f) => ({ id: f.id, title: f.state.title, phase: f.state.phase, waivers: f.state.waivers.length })),
+      reviews: listReviews(root).map((f) => ({ id: f.id, title: f.state.title, phase: f.state.phase, verdict: f.state.verdict ?? null })),
     };
   }
   const f = resolveFeature(root, ref);
   const state = loadState(f.dir);
+  if (state.kind === 'review') return reviewStatus(root, f, state, config);
   const next = state.phase === 'done' ? null : GATES[GATES.indexOf(state.phase) + 1] ?? GATES[0];
   let acs = [];
   try { acs = parseAcceptanceCriteria(fs.readFileSync(specPath(f.dir), 'utf8')).map((a) => a.id); } catch { /* draft */ }
@@ -774,25 +1016,42 @@ export function writeReport(root, ref) {
   const ledger = readLedger(f.dir);
   const integrity = verifyLedger(root, f.dir);
   const row = (e) => `| #${e.seq} | ${e.step}${e.name ? ':' + e.name : ''}${e.ac ? ' ' + e.ac : ''} | \`${e.cmd.replace(/\|/g, '\\|').slice(0, 80)}\` | ${e.exit}${e.expect ? (e.expectMatched ? ' ✓expect' : ' ✗expect') : ''} | \`${e.tree.slice(0, 10)}\` | [log](${toPosix(path.relative(f.dir, path.join(root, e.log)))}) |`;
+  const review = state.kind === 'review';
   const lines = [
-    `# Evidence report: ${f.id} ${state.title}`, '',
+    `# ${review ? 'Review' : 'Evidence'} report: ${f.id} ${state.title}`, '',
     `Generated by \`tnt report\`. Ledger integrity: **${integrity.ok ? 'intact' : 'BROKEN'}** (${integrity.count} entries).`, '',
-    `- Phase: **${state.phase}**`, `- Spec approved by: ${state.approval?.by ?? '—'} (ledger #${state.approval?.seq ?? '—'})`,
-    `- Base: \`${state.base || '(root)'}\`  Branch: \`${state.branch ?? '—'}\``,
-    `- Locked tests: ${state.locked ? Object.keys(state.locked.files).map((x) => `\`${x}\``).join(', ') : '—'}`, '',
-    '## Gates', '', '| Gate | Status | Ledger | Tree |', '|---|---|---|---|',
-    ...['spec', 'red', 'green', 'style', 'review', 'functional', 'audit'].map((g) => {
+    `- Phase: **${state.phase}**`, `- ${review ? 'Claims' : 'Spec'} approved by: ${state.approval?.by ?? '—'} (ledger #${state.approval?.seq ?? '—'})`,
+    ...(review ? [
+      `- Change: \`${state.target.ref}\` at \`${state.target.commit}\`, reviewed against \`${state.target.baseRef}\` (merge base \`${state.base}\`)`,
+      `- Verdict: **${state.verdict ? state.verdict.replace('_', ' ').toUpperCase() : 'pending'}**`,
+    ] : [
+      `- Base: \`${state.base || '(root)'}\`  Branch: \`${state.branch ?? '—'}\``,
+      `- Locked tests: ${state.locked ? Object.keys(state.locked.files).map((x) => `\`${x}\``).join(', ') : '—'}`,
+    ]), '',
+    `## ${review ? 'Checks' : 'Gates'}`, '', `| ${review ? 'Check' : 'Gate'} | Status | Ledger | Tree |`, '|---|---|---|---|',
+    ...gatesOf(state).map((g) => {
       const s = state.gates[g];
-      return `| ${g} | ${s ? (s.waived ? '**WAIVED**' : 'passed') : 'pending'} | ${s ? '#' + s.seq : '—'} | ${s ? '`' + s.tree.slice(0, 10) + '`' : '—'} |`;
+      const st = !s ? 'pending' : s.waived ? '**WAIVED**' : s.pass === false ? '**FINDINGS**' : 'passed';
+      return `| ${g} | ${st} | ${s ? '#' + s.seq : '—'} | ${s ? '`' + s.tree.slice(0, 10) + '`' : '—'} |`;
     }),
   ];
+  if (review) {
+    const found = gatesOf(state).flatMap((g) => (state.gates[g]?.findings ?? []).map((x) => `- **${g}**: ${x}`));
+    if (found.length) lines.push('', '## Findings', '', ...found);
+    const reviews = ledger.filter((e) => e.type === 'review' && e.tree === state.tree);
+    const latestBySource = [...new Map(reviews.map((e) => [e.source ?? 'agent', e])).values()];
+    const items = latestBySource.flatMap((e) => {
+      try { return (readJson(path.join(root, e.file)).findings ?? []).map((x) => `- ${x.severity} \`${x.file}:${x.line}\`${e.source ? ` (${e.source})` : ''}: ${x.issue}`); } catch { return []; }
+    });
+    if (items.length) lines.push('', '## Code review findings', '', ...items);
+  }
   if (state.waivers.length) lines.push('', '## Waivers', '', ...state.waivers.map((w) => `- **${w.gate}** waived by ${w.by} (#${w.seq}): ${w.reason}`));
   if (state.unlocks.length) lines.push('', '## Test unlocks', '', ...state.unlocks.map((u) => `- #${u.seq}: ${u.reason}`));
   lines.push('', '## Recorded runs', '', '| Seq | Step | Command | Exit | Tree | Log |', '|---|---|---|---|---|---|', ...ledger.filter((e) => e.type === 'run').map(row));
   const subs = ledger.filter((e) => e.type === 'review' || e.type === 'audit-report');
   if (subs.length) lines.push('', '## Submissions', '', ...subs.map((e) => `- #${e.seq} ${e.type}${e.source ? ` (${e.source})` : ''}: **${e.verdict}** (${toPosix(path.relative(f.dir, path.join(root, e.file)))})`));
-  const failed = ledger.filter((e) => e.type === 'gate' && !e.pass);
-  if (failed.length) lines.push('', '## Failed gate attempts', '', ...failed.map((e) => `- #${e.seq} ${e.gate}: ${e.reasons.join('; ')}`));
+  const failed = ledger.filter((e) => e.type === 'gate' && !e.pass && e.reasons);
+  if (failed.length) lines.push('', `## ${review ? 'Undecided check attempts' : 'Failed gate attempts'}`, '', ...failed.map((e) => `- #${e.seq} ${e.gate}: ${e.reasons.join('; ')}`));
   const out = path.join(f.dir, 'report.md');
   fs.writeFileSync(out, lines.join('\n') + '\n');
   return relPath(root, out);

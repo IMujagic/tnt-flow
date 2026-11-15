@@ -47,6 +47,15 @@ importing the harness modules directly. If you need one, stop and report it.
 
 Logs land in `.tnt/features/<F>/evidence/`. Read them to diagnose a failure.
 
+### Reviews of changes built outside tnt
+
+Ids starting `R-` are reviews of someone else's change (`/tnt:review-non-tnt-feature`).
+They live in `.tnt/reviews/<R-dir>/`, and their checks are spec → tests → style →
+review → functional → audit. The change is never modified. A check is decided with
+a pass or with findings against the change, and both are valid outcomes. Only missing
+or invalid evidence needs another attempt. `TNT status <R> --json` gives `dir`, `base`
+and `target`.
+
 ## 3. Step boundaries
 
 | Role | May change | Must not change |
