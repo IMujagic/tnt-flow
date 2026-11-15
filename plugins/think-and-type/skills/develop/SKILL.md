@@ -106,6 +106,8 @@ verifier, and never pick a model to make a gate easier to pass.
   - *environment*: tell the user exactly what is missing and stop.
   - *spec gap*: show the user. The spec must be edited and re-approved.
 - **audit fails**: route each failed check to the step that owns it. A weak test goes to unlock and test-author; unresolved findings go to implementer; non-reproducible functional evidence goes to functional-tester.
+- **After a spec is re-approved with changes**: the approval resets the feature to `spec` and drops the old test locks (the approve output lists them). Don't run `TNT unlock`. Run `test-author` again: it updates the tests for the new ACs, locks the full current set and records a failing run. Then continue from red.
+- **Locked set is wrong before red passes** (a locked test was deleted, renamed or belongs to a removed AC): `TNT unlock` does not apply yet. Have `test-author` re-lock the full current set with `TNT lock-tests <F> <files...> --replace`.
 
 Waivers (`TNT waive`) are only for an explicit user decision. Ask, quote their reason,
 and record `--by` with their name. Never suggest a waiver as the first option.

@@ -22,7 +22,7 @@ plan ──▶ spec (human approves)
 
 | Gate | Passes only when the ledger shows… |
 |---|---|
-| spec | a human approved the exact `spec.md` content (hash recorded); every AC is concrete and has an `Expect:` pattern for its functional proof that doesn't also match generic output |
+| spec | a human approved the exact `spec.md` content (hash recorded); every AC is concrete and has an `Expect:` pattern for its functional proof that doesn't also match generic output (not needed in the light profile). Re-approving a changed spec drops the old test locks |
 | red | test files are locked (hashed), every `AC-n` is referenced by a test name (`AC-1`, `test_ac_1_…`, `TestAC1…`, whatever the language allows), and the **configured full suite failed** on the current tree with an AC id in the output |
 | green | the full suite passed after red, the locked tests are byte-identical, and the code differs from the red tree (otherwise the suite is flaky) |
 | style | every configured lint, format-check and typecheck command exited 0 on the green tree |
@@ -57,6 +57,25 @@ The marketplace is named `think-and-type`. The plugin id is `tnt`, so its comman
 are `/tnt:<skill>` and its agents are `tnt:<agent>`.
 
 To work on the plugin without installing it, run `claude --plugin-dir plugins/think-and-type`.
+
+### Updating
+
+Claude Code runs an installed copy of the plugin from its plugin cache, so new commits
+here don't reach your sessions until you update. A new version is picked up when the
+`version` in `plugin.json` is higher than the installed one:
+
+```bash
+claude plugin marketplace update think-and-type
+```
+
+```bash
+claude plugin update tnt@think-and-type
+```
+
+A session loads plugins when it starts, so restart running sessions to use the new
+version. Existing `.tnt/` directories need no migration from 0.3 onwards (for 0.1, see
+[Upgrading from 0.1](#upgrading-from-01)). Specs approved before `Expect:` patterns
+were required keep working, because the rule applies at approval.
 
 ## Use
 
