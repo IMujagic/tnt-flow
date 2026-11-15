@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "matcher": "tnt:.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/usage.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

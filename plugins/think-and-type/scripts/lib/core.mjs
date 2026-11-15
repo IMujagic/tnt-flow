@@ -21,7 +21,12 @@ const FEATURE_DIR = /^(F-[0-9A-Z]+)(?=-|$)/;
 export const REVIEW_ID = /^R-[0-9A-Z]+$/;
 const REVIEW_DIR = /^(R-[0-9A-Z]+)(?=-|$)/;
 export const REVIEW_CHECKS = ['spec', 'tests', 'style', 'review', 'functional', 'audit'];
-export const gatesOf = (state) => (state.kind === 'review' ? REVIEW_CHECKS : GATES);
+// The light profile, chosen by a human when approving a spec, for small and
+// low-risk changes: test-first and style as usual, then `tnt verify` re-runs
+// everything, with no code-review, functional or auditor agents.
+export const PROFILES = ['full', 'light'];
+export const LIGHT_GATES = ['spec', 'red', 'green', 'style', 'audit'];
+export const gatesOf = (state) => (state.kind === 'review' ? REVIEW_CHECKS : state.profile === 'light' ? LIGHT_GATES : GATES);
 
 export class TntError extends Error {}
 
@@ -267,7 +272,7 @@ export const activePath = (root) => path.join(root, TNT_DIR, 'active.json');
 export function ensureLocalIgnores(root) {
   const p = path.join(root, TNT_DIR, '.gitignore');
   let have = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
-  const missing = ['active.json', 'view.html', 'reviews/'].filter((name) => !new RegExp(`^/?${name.replace('.', '\\.')}$`, 'm').test(have));
+  const missing = ['active.json', 'view.html', 'reviews/', 'usage.jsonl'].filter((name) => !new RegExp(`^/?${name.replace('.', '\\.')}$`, 'm').test(have));
   if (!missing.length) return;
   if (have && !have.endsWith('\n')) have += '\n';
   if (!have.includes('# local to each checkout')) have += '# local to each checkout\n';

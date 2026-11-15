@@ -23,7 +23,10 @@ argument-hint: "<what to build>"
 6. Approval belongs to the user. For each spec they accept, run
    `TNT approve <F> --by "<their name>"`. Never approve without an explicit yes.
    Claude Code shows a permission prompt for each approval; the user's click there is
-   the confirmation. If they decline it, the spec stays unapproved.
+   the confirmation. If they decline it, the spec stays unapproved. For a small,
+   low-risk feature (about 1 or 2 ACs, one module, no security, data or public-API
+   impact), offer the light profile, which skips the code-review, functional and
+   auditor agents: `TNT approve <F> --by "<their name>" --profile light`. The user decides.
 7. Ask before committing the specs (`docs(F-xxx): spec`). A clean tree is needed before
    `/tnt:develop`.
 

@@ -15,21 +15,28 @@ makes each step independent.
 ## 0. Pick the feature
 
 - Feature: `$ARGUMENTS`. If it is empty, run `TNT status` and pick the active feature, or else the first feature whose phase is `spec`. If none qualifies, tell the user to run `/tnt:plan` and stop.
-- Run `TNT status <F> --json`. If `gates.spec` is missing, the spec is not approved: show `spec.md` to the user, ask for approval, then run `TNT approve <F> --by "<their name>"`. Never approve on the user's behalf.
+- Run `TNT status <F> --json`. If `gates.spec` is missing, the spec is not approved: show `spec.md` to the user, ask for approval, then run `TNT approve <F> --by "<their name>"`. Never approve on the user's behalf. If the change is small and low-risk (a bug fix or a change in one module, about 1 or 2 ACs, no security, data or public-API impact), offer the light profile as well: `TNT approve <F> --by "<their name>" --profile light`. The user decides, and it is recorded with the approval.
 - If `started` is false, run `TNT start <F>`. It needs a clean tree and creates the branch.
 
 ## 1. Pipeline
 
 Loop on `phase` from `TNT status <F> --json` until it reads `done`:
 
-| phase | spawn subagent | then run |
+| phase | do | then run |
 |---|---|---|
-| `spec` | `tnt:test-author` | `TNT gate <F> red` |
-| `red` | `tnt:implementer` | `TNT gate <F> green` |
-| `green` | `tnt:style-verifier` | `TNT gate <F> style` |
-| `style` | `tnt:code-reviewer` | `TNT gate <F> review` |
-| `review` | `tnt:functional-tester` | `TNT gate <F> functional` |
-| `functional` | `tnt:evidence-auditor` | `TNT gate <F> audit` |
+| `spec` | spawn `tnt:test-author` | `TNT gate <F> red` |
+| `red` | spawn `tnt:implementer` | `TNT gate <F> green` |
+| `green` | run `TNT run <F> style` yourself | `TNT gate <F> style` |
+| `style` | spawn `tnt:code-reviewer` | `TNT gate <F> review` |
+| `review` | spawn `tnt:functional-tester` | `TNT gate <F> functional` |
+| `functional` | spawn `tnt:evidence-auditor` | `TNT gate <F> audit` |
+
+With `profile: light` (from `TNT status <F> --json`), the gates are spec, red, green,
+style and audit only. After style, run `TNT verify <F>` yourself, then `TNT gate <F> audit`.
+There is no code review, functional test or auditor; the report says so.
+
+You run the style commands yourself because the harness chooses them, so there is
+nothing for an agent to decide. An agent is needed only to fix a failure (see 2).
 
 **External reviewer.** If `commands.external_review` is set in `.tnt/config.json`,
 then in the `style` phase, after `tnt:code-reviewer` returns, run `TNT review external <F>`
@@ -49,7 +56,7 @@ run it again to "confirm".
 Other developers keep merging into the base branch. Evidence for code that sits on a
 stale base doesn't prove the code that will actually ship. So when the phase reaches
 `green` and `syncedBase` in `TNT status <F> --json` is still null, integrate before
-you spawn the style-verifier:
+you run the style checks:
 
 1. Pick the base: `baseBranch` from `TNT status <F> --json`. If the repo has a remote, run `git fetch` and use `origin/<baseBranch>` when it exists.
 2. If `git merge-base --is-ancestor <base> HEAD` succeeds, the base is already merged. Skip to step 4.
@@ -65,7 +72,7 @@ real merge result with `tnt verify --integrated` (see the README).
 Every prompt contains only:
 - the feature id and its directory (from `status`)
 - the step's goal in one line
-- on a retry: the **verbatim** `TNT gate` failure output, plus paths to the logs or JSON files it cites
+- on a retry: the **verbatim** `TNT gate` failure output, plus paths to the logs or JSON files it cites. The gate output already contains the failing lines of each cited run ("failing output of #n"), so the step starts from the failure and opens the full log only if the excerpt isn't enough.
 
 Never forward one subagent's summary, reasoning or claims to another subagent. A
 verifier gets no hint of what the producer believes it did. Verifiers start fresh
@@ -77,9 +84,11 @@ Count the attempts with the `attempts` field. When a gate's attempts reach
 `maxIterations`, stop and escalate to the user (see 3).
 
 **Models.** Each agent's model is set in its definition to save usage: mechanical
-steps run on Sonnet (`test-author`, `implementer`, `functional-tester`) or Haiku
-(`style-verifier`). Judgment steps inherit the session model (`code-reviewer`,
-`evidence-auditor`). When you re-brief a Sonnet producer for a gate whose
+steps run on Sonnet (`test-author`, `implementer`, `functional-tester`). Judgment
+steps inherit the session model (`code-reviewer`, `evidence-auditor`). Your own
+routing work is cheap: if the session runs on Opus, suggest Sonnet for
+`/tnt:develop`, and one feature per session so your context stays small.
+`TNT usage <F>` shows the tokens each step used. When you re-brief a Sonnet producer for a gate whose
 `attempts` is already 2 or more, spawn it with `model: "opus"`, because two cheap
 attempts already failed and a stronger model costs less than another failed attempt. Never downgrade a
 verifier, and never pick a model to make a gate easier to pass.
@@ -87,7 +96,7 @@ verifier, and never pick a model to make a gate easier to pass.
 - **red fails**: re-brief `test-author` with the gate output.
 - **green fails**: re-brief `implementer` with the gate output and the green log path. If the implementer returns `blocked` because a locked test contradicts the spec, show the user the quoted test and the AC. With their agreement, either fix the spec (it must be re-approved) or run `TNT unlock <F> --reason "<why>"` and re-run `test-author`.
 - **After any implementer fix** (style, review, functional or audit): run `TNT gate <F> green` before anything else. Code changes invalidate the evidence recorded after green. Passing green again resets the later gates, and the loop resumes at style.
-- **style fails**: send the style-verifier's violation list to `implementer`.
+- **style fails**: send `implementer` the gate output (it includes the failing lines of each style run) and the log paths. Ask it to fix only violations in files this feature changed, and to report pre-existing ones elsewhere instead of fixing them.
 - **review: changes_requested**: read the review file the gate output names (`evidence/*-review.json`, or `*-review-external.json` from the external reviewer). Treat both the same way.
   - Findings with `needs_test: true` mean missing behaviour. Run `TNT unlock <F> --reason "review <ids>: missing coverage"`, then `test-author` with those findings. That gives a new failing test, then implementer, and so on.
   - All other blocking, major and minor findings go to `implementer` with the review file path.

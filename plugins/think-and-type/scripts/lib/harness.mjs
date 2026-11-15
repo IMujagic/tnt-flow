@@ -12,7 +12,7 @@ import {
   projectDir, scopeDir, FEATURE_ID, ensureLocalIgnores,
   featuresDir, listFeatures, resolveFeature, loadState, saveState, specPath, evidenceDir,
   activePath, readActive, SPEC_TEMPLATE, slugify, parseAcceptanceCriteria, acRegex, fileSha, relPath,
-  parseSpecExpectations, weakExpectation, withConfigDefaults, REVIEW_CHECKS, gatesOf, reviewsDir, REVIEW_SPEC_TEMPLATE, listReviews,
+  parseSpecExpectations, weakExpectation, withConfigDefaults, PROFILES, REVIEW_CHECKS, gatesOf, reviewsDir, REVIEW_SPEC_TEMPLATE, listReviews,
 } from './core.mjs';
 import os from 'node:os';
 
@@ -123,6 +123,39 @@ export function configFor(root, f) {
   return f?.dir && f.state?.kind === 'review' ? trustedConfig(f.dir) : loadConfig(root);
 }
 
+// Short excerpts of the failing runs a gate's reasons cite (`#seq`), so the
+// orchestrator can forward the failure itself instead of sending a step to read
+// a whole log. The full log stays the evidence; this is only a pointer into it.
+const FAILURE_LINE = /\b(fail(ed|ure|ing|s)?|errors?|exception|assert\w*|expected|actual|traceback|panic(ked)?|not ok)\b|✖|✗/i;
+export function excerptLog(text, max = 40) {
+  const at = text.indexOf('\n---- stdout ----\n');
+  const lines = (at >= 0 ? text.slice(at + 1) : text).split(/\r?\n/).filter((l) => !/^---- std(out|err) ----$/.test(l));
+  const keep = new Set();
+  lines.forEach((l, i) => { if (FAILURE_LINE.test(l)) for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 3); j++) keep.add(j); });
+  const picked = keep.size ? [...keep].sort((a, b) => a - b) : lines.map((_, i) => i).filter((l, i) => lines[i].trim()).slice(-25);
+  const out = [];
+  let prev = -2;
+  for (const i of picked) {
+    if (out.length >= max) { out.push('…'); break; }
+    if (out.length && i !== prev + 1) out.push('…');
+    out.push(lines[i].length > 300 ? lines[i].slice(0, 300) + '…' : lines[i]);
+    prev = i;
+  }
+  return out;
+}
+
+function failureExcerpts(root, ledger, reasons) {
+  const out = [];
+  const seqs = [...new Set(reasons.flatMap((r) => [...String(r).matchAll(/#(\d+)/g)].map((m) => Number(m[1]))))];
+  for (const seq of seqs) {
+    const e = ledger.find((x) => x.seq === seq && x.type === 'run' && x.log);
+    if (!e || (e.exit === 0 && e.expectMatched !== false)) continue;
+    try { out.push({ seq, log: e.log, lines: excerptLog(fs.readFileSync(path.join(root, e.log), 'utf8')) }); } catch { /* log missing: integrity check reports it */ }
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
 function outputMatches(pattern, r) {
   try { return new RegExp(pattern, 'm').test(r.stdout + '\n' + r.stderr); } catch { return false; }
 }
@@ -195,7 +228,7 @@ function specInfo(featureDir) {
   return { text, sha: sha256(text), acs: parseAcceptanceCriteria(text), expects: parseSpecExpectations(text) };
 }
 
-function specProblems(spec, config) {
+function specProblems(spec, config, { profile = 'full' } = {}) {
   const p = [];
   if (!spec.acs.length) p.push('spec has no acceptance criteria (lines like "- AC-1: Given ..., when ..., then ...")');
   for (const ac of spec.acs) if (/\.\.\.|<[^>]+>/.test(ac.text)) p.push(`${ac.id} still contains template placeholders`);
@@ -207,7 +240,9 @@ function specProblems(spec, config) {
       if (weak) p.push(`${ac} Expect \`${pattern}\` ${weak}`);
     }
   }
-  if (config.functional?.requireSpecExpect !== false) {
+  // The light profile has no functional step, so Expect patterns are optional
+  // there (any that are given must still be valid and specific).
+  if (config.functional?.requireSpecExpect !== false && profile !== 'light') {
     for (const ac of spec.acs) {
       if (!spec.expects.has(ac.id)) p.push(`${ac.id} has no expected outcome: add "Expect: \`<regex>\`" to its line in the functional verification plan`);
     }
@@ -215,15 +250,19 @@ function specProblems(spec, config) {
   return p;
 }
 
-export function approve(root, ref, { by }) {
+export function approve(root, ref, { by, profile } = {}) {
   if (!by) throw new TntError('--by "<human name>" is required: approval records who signed off on the spec');
   const f = resolveFeature(root, ref);
+  if (profile && f.state.kind === 'review') throw new TntError('--profile applies to features, not reviews');
+  profile ||= f.state.profile ?? 'full';
+  if (!PROFILES.includes(profile)) throw new TntError(`--profile must be one of ${PROFILES.join(', ')}`);
   const spec = specInfo(f.dir);
-  const problems = specProblems(spec, configFor(root, f));
+  const problems = specProblems(spec, configFor(root, f), { profile });
   if (problems.length) throw new TntError(problems.join('; '));
-  const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id) });
+  const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id), profile: f.state.kind === 'review' ? undefined : profile });
   const state = loadState(f.dir);
   state.approval = { by, seq: e.seq, specSha: spec.sha };
+  if (state.kind !== 'review') state.profile = profile;
   saveState(f.dir, state);
   return gate(root, f.id, 'spec');
 }
@@ -341,7 +380,7 @@ function lockedIssues(root, state) {
 const EVALUATORS = {
   spec(ctx) {
     const { state, spec, config } = ctx;
-    const p = specProblems(spec, config);
+    const p = specProblems(spec, config, { profile: state.profile });
     if (!state.approval) p.push('spec not approved (`tnt approve <F> --by <name>`)');
     else if (state.approval.specSha !== spec.sha) p.push('spec.md changed after approval; re-approve');
     return p;
@@ -427,6 +466,8 @@ const EVALUATORS = {
       if (v.tree !== tree) p.push(`verify #${v.seq} ran on a different tree`);
       if (!v.ok) p.push(`verify #${v.seq} failed: ${v.failures.join('; ')}`);
     }
+    // The light profile ends with the re-run alone; no auditor agent judges it.
+    if (ctx.state.profile === 'light') return p;
     const a = latest(ledger, (e) => e.type === 'audit-report' && e.feature === f.id);
     if (!a) p.push('no audit report submitted (`tnt audit submit`)');
     else {
@@ -454,13 +495,14 @@ function gateContext(root, f) {
 function preconditions(ctx, g) {
   const { state, spec, tree } = ctx;
   const p = [];
-  const idx = GATES.indexOf(g);
-  for (const prev of GATES.slice(0, idx)) if (!state.gates[prev]) { p.push(`gate "${prev}" has not passed yet`); return p; }
+  const list = gatesOf(state);
+  const idx = list.indexOf(g);
+  for (const prev of list.slice(0, idx)) if (!state.gates[prev]) { p.push(`gate "${prev}" has not passed yet`); return p; }
   if (g !== 'spec') {
     if (!state.approval || state.approval.specSha !== spec.sha) p.push('spec.md changed after approval; re-approve before continuing');
     if (state.base === null) p.push('feature not started (`tnt start`)');
   }
-  if (idx > GATES.indexOf('green') && state.gates.green.tree !== tree) {
+  if (idx > list.indexOf('green') && state.gates.green.tree !== tree) {
     p.push('code changed since the green gate; re-run `tnt run <F> green` and pass the green gate again');
   }
   return p;
@@ -469,8 +511,11 @@ function preconditions(ctx, g) {
 const COMMIT_ON = { red: (f) => `test(${f.id}): failing acceptance tests [tnt:red]`, green: (f, s) => `feat(${f.id}): ${s.title} [tnt:green]`, audit: (f) => `chore(${f.id}): evidence and report [tnt:done]` };
 
 function evaluate(root, ref, g) {
-  if (!GATES.includes(g)) throw new TntError(`unknown gate "${g}"; one of ${GATES.join(', ')}`);
   const f = resolveFeature(root, ref);
+  const list = gatesOf(f.state);
+  if (!list.includes(g)) {
+    throw new TntError(GATES.includes(g) ? `gate "${g}" is not part of ${f.id}'s light profile (${list.join(' > ')})` : `unknown gate "${g}"; one of ${list.join(', ')}`);
+  }
   const ctx = gateContext(root, f);
   let reasons = preconditions(ctx, g);
   if (!reasons.length) reasons = EVALUATORS[g](ctx);
@@ -512,7 +557,8 @@ export function gate(root, ref, g) {
     saveState(f.dir, state);
   }
   const attempts = state.attempts[g];
-  return { feature: f.id, gate: g, pass, reasons, seq: e.seq, phase: state.phase, attempts, maxIterations: ctx.config.limits.maxIterations, commit };
+  const excerpts = pass ? undefined : failureExcerpts(root, ctx.ledger, reasons);
+  return { feature: f.id, gate: g, pass, reasons, excerpts, seq: e.seq, phase: state.phase, attempts, maxIterations: ctx.config.limits.maxIterations, commit };
 }
 
 export function waive(root, ref, g, { reason, by }) {
@@ -664,7 +710,8 @@ export function verify(root, ref) {
   let expects = new Map();
   try { ({ acs, expects } = specInfo(f.dir)); } catch (e) { failures.push(e.message); }
   const gatedTree = state.gates.green?.tree ?? tree;
-  for (const ac of acs) {
+  // The light profile records no functional evidence; its proof is the suite.
+  for (const ac of state.profile === 'light' ? [] : acs) {
     const runs = functionalRuns(ledger, f.id, ac.id, gatedTree).filter((e) => e.exit === 0 && e.expectMatched === true);
     if (!runs.length) { failures.push(`${ac.id}: no passing functional evidence to reproduce`); continue; }
     const again = runs.map((run) => rerun({ ac: ac.id, name: 'functional', cmd: run.cmd, expect: run.expect }, (r) => [
@@ -721,7 +768,7 @@ export function verifyIntegrated(root, refs = [], { out } = {}) {
 
   for (const f of selected) {
     const state = f.state;
-    if (!state.gates.green) continue;
+    if (!state.gates.green || state.profile === 'light') continue; // light features have no functional evidence
     const ledger = readLedger(f.dir);
     let acs = [];
     let expects = new Map();
@@ -1062,6 +1109,7 @@ function reviewGate(root, f, g) {
   if (decided && g === 'audit') writeReport(root, f.id);
   return {
     feature: f.id, gate: g, kind: 'review', decided, pass, reasons, missing, findings, seq: e.seq, phase: state.phase,
+    excerpts: pass ? undefined : failureExcerpts(root, ctx.ledger, reasons),
     attempts: state.attempts[g], maxIterations: ctx.config.limits.maxIterations, verdict: state.verdict, commit: null,
   };
 }
@@ -1132,11 +1180,12 @@ export function status(root, ref) {
   const f = resolveFeature(root, ref);
   const state = loadState(f.dir);
   if (state.kind === 'review') return reviewStatus(root, f, state, config);
-  const next = state.phase === 'done' ? null : GATES[GATES.indexOf(state.phase) + 1] ?? GATES[0];
+  const list = gatesOf(state);
+  const next = state.phase === 'done' ? null : list[list.indexOf(state.phase) + 1] ?? list[0];
   let acs = [];
   try { acs = parseAcceptanceCriteria(fs.readFileSync(specPath(f.dir), 'utf8')).map((a) => a.id); } catch { /* draft */ }
   return {
-    id: f.id, title: state.title, dir: relPath(root, f.dir), phase: state.phase, nextGate: next,
+    id: f.id, title: state.title, dir: relPath(root, f.dir), phase: state.phase, nextGate: next, profile: state.profile ?? 'full', gateList: list,
     started: state.base !== null, base: state.base, baseBranch: state.baseBranch ?? null, syncedBase: state.syncedBase ?? null, branch: state.branch, acs, gates: state.gates, attempts: state.attempts,
     lockedTests: state.locked ? Object.keys(state.locked.files) : [], waivers: state.waivers, unlocks: state.unlocks,
     maxIterations: config.limits.maxIterations, active: active?.feature === f.id,
@@ -1154,6 +1203,7 @@ export function writeReport(root, ref) {
     `# ${review ? 'Review' : 'Evidence'} report: ${f.id} ${state.title}`, '',
     `Generated by \`tnt report\`. Ledger integrity: **${integrity.ok ? 'intact' : 'BROKEN'}** (${integrity.count} entries).`, '',
     `- Phase: **${state.phase}**`, `- ${review ? 'Claims' : 'Spec'} approved by: ${state.approval?.by ?? '—'} (ledger #${state.approval?.seq ?? '—'})`,
+    ...(state.profile === 'light' ? ['- Profile: **light**, chosen at approval: no code review, functional or audit agents; `tnt verify` re-ran the suite and style checks'] : []),
     ...(review ? [
       `- Change: \`${state.target.ref}\` at \`${state.target.commit}\`, against \`${state.target.baseRef}\``,
       `- Reviewed: ${state.mode === 'head' ? `the change's own commit (diff from merge base \`${state.base}\`)` : `the change merged into \`${state.target.baseRef}\` at \`${state.baseCommit}\` (what would ship)`}`,

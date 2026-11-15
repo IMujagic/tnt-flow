@@ -10,7 +10,7 @@ was run against.
 plan ──▶ spec (human approves)
            │
            ▼
-  test-author ─▶ [red gate] ─▶ implementer ─▶ [green gate] ─▶ style-verifier ─▶ [style gate]
+  test-author ─▶ [red gate] ─▶ implementer ─▶ [green gate] ─▶ style commands ─▶ [style gate]
                                                                                  │
   evidence-auditor ◀─ [functional gate] ◀─ functional-tester ◀─ [review gate] ◀─ code-reviewer
          │
@@ -65,7 +65,7 @@ To work on the plugin without installing it, run `claude --plugin-dir plugins/th
 | `/tnt:onboard` | Adopt the workflow in an existing repo: analyse it, prove its commands, record a baseline |
 | `/tnt:new-project <idea>` | Greenfield: brief, architect design, scaffold a proven toolchain, seed a backlog |
 | `/tnt:plan <request>` | Slice a request into features with AC-based specs; you approve each one |
-| `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable |
+| `/tnt:develop [F-xxx]` | Run the gated pipeline for a feature; resumable. Small changes can use the light profile (see [Keeping cost down](#keeping-cost-down)) |
 | `/tnt:status [F-xxx]` | Gates, attempts, waivers, ledger integrity. Offers to open the ledger viewer |
 | `/tnt:verify <F-xxx>` | Re-execute all evidence and re-audit, for example before a merge. Ask it to check a merge result to run `tnt verify --integrated` |
 | `/tnt:review-non-tnt-feature <PR#\|branch>` | Review someone else's change with evidence: its claims, tests, style, an independent code review and functional checks, ending in a verdict and findings. Local only; never touches the change |
@@ -77,7 +77,7 @@ Each project gets a `.tnt/` directory. Commit it, because it is the audit trail:
 .tnt/
   config.json          commands the gates run, git and limit settings
   project.md           architecture, conventions, functional-test approach
-  .gitignore           keeps local files out of git: active.json (this checkout's feature), view.html, reviews/
+  .gitignore           keeps local files out of git: active.json (this checkout's feature), view.html, reviews/, usage.jsonl
   _project/
     ledger.jsonl       hash chain for init, baseline and project probes (CLI-only)
     evidence/          baseline logs (CLI-only)
@@ -221,7 +221,6 @@ deep reasoning where the step needs it:
 |---|---|---|
 | inherit (your session model) | `architect`, `planner`, `claims-analyst`, `code-reviewer`, `evidence-auditor` | design, specs and independent judgement: a weak spec or a missed review finding costs more than the tokens |
 | `sonnet` | `test-author`, `implementer`, `functional-tester`, `scaffolder`, `codebase-analyst` | well-scoped work against a spec, checked by a gate afterwards |
-| `haiku` | `style-verifier` | runs the configured linters and reports their output |
 
 The gates decide pass or fail from recorded evidence whatever model produced it, so
 a cheaper producer can't lower the bar. It can only take more attempts. To keep that
@@ -230,7 +229,16 @@ twice. To change a default, edit the `model:` line of the agent (`sonnet`, `opus
 `haiku`, `inherit` or a full model id).
 
 The orchestrator (`/tnt:develop`) runs in your main session, so your session model
-applies to it. Its work is routing, and Sonnet handles that well.
+applies to it. Its work is routing, and Sonnet handles that well. Start a fresh
+session per feature so its context stays small.
+
+### Keeping cost down
+
+- **See where it goes.** A `SubagentStop` hook records each tnt subagent's token use in `.tnt/usage.jsonl` (local, git-ignored). `tnt usage [<F>]` shows it per feature and agent, with the model each used. Your main session's own usage isn't included; `/cost` shows that.
+- **The light profile for small changes.** When you approve a spec, `tnt approve <F> --by <you> --profile light` runs spec → red → green → style → audit, where the audit is `tnt verify` re-running the suite and style checks, with no code-review, functional or auditor agent. That is 2 agents (test-author and implementer, both Sonnet) instead of 5, and the spec needs no `Expect:` patterns. The choice is recorded with the approval and shown in the report; use it for bug fixes and small, low-risk changes, not for security, data or public-API work.
+- **No agent for mechanical steps.** The orchestrator runs the configured style commands itself; an agent only starts to fix a failure.
+- **Failures arrive pre-cut.** A failing gate prints the failing lines of each run it cites ("failing output of #n", with the log path), so the fix step starts from the failure instead of reading whole logs.
+- **Cached instructions.** Each agent carries the protocol sections its role needs in its own instructions, which are cached across spawns, instead of reading a shared file on every start.
 
 ## Working in a team
 

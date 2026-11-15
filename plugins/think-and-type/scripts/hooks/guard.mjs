@@ -19,7 +19,7 @@ import path from 'node:path';
 const TNT = '.tnt';
 const PROTECTED = [
   /^\.tnt\/ledger\.jsonl$/, // the single ledger of tnt 0.1
-  /^\.tnt\/(active\.json|view\.html)$/,
+  /^\.tnt\/(active\.json|view\.html|usage\.jsonl)$/,
   /^\.tnt\/evidence\//,
   /^\.tnt\/_project\/(ledger\.jsonl$|evidence\/)/,
   /^\.tnt\/features\/[^/]+\/(ledger\.jsonl|state\.json|report\.md)$/,
@@ -32,7 +32,6 @@ const VERIFIER_WRITABLE = {
   'code-reviewer': [/^\.tnt\/(features|reviews)\/[^/]+\/review\.draft\.json$/],
   'evidence-auditor': [/^\.tnt\/(features|reviews)\/[^/]+\/audit\.draft\.json$/],
   'functional-tester': [/^\.tnt\/(features|reviews)\/[^/]+\/functional\//],
-  'style-verifier': [],
   'claims-analyst': [/^\.tnt\/reviews\/[^/]+\/spec\.md$/],
 };
 const LOCK_PHASES = new Set(['red', 'green', 'style', 'review', 'functional', 'audit', 'done']);
@@ -122,7 +121,7 @@ if (SHELL_TOOLS.has(tool)) {
     if (git) deny(`\`${git}\` is not a step's job: the harness commits, the orchestrator merges, and changes are never discarded or history rewritten. Report what you need instead.`);
   }
   if (writes(cmd)) {
-    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/)|reviews\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|config\.json|evidence\/))/.test(cmd)) {
+    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|usage\.jsonl|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/)|reviews\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|config\.json|evidence\/))/.test(cmd)) {
       deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
     }
     for (const file of locked) {

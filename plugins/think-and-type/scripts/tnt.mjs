@@ -6,6 +6,7 @@ import path from 'node:path';
 import { TntError, requireRoot, GATES, REVIEW_CHECKS, PROJECT_FEATURE, loadConfig, verifyAllLedgers, resolveFeature } from './lib/core.mjs';
 import * as h from './lib/harness.mjs';
 import { writeView } from './lib/view.mjs';
+import { usageReport, usageText } from './lib/usage.mjs';
 
 // Best effort: hand the file to the OS default browser and don't wait for it.
 function openInBrowser(file) {
@@ -24,7 +25,8 @@ Project
 
 Features
   tnt new "<title>" [--id F-XXX]                    create a feature (random collision-free id unless --id) with a spec.md template
-  tnt approve <F> --by "<human>"                    record human approval of spec.md, pass the spec gate
+  tnt approve <F> --by "<human>" [--profile light]  record human approval of spec.md, pass the spec gate; the light
+                                                    profile (small changes) is spec > red > green > style > audit (verify only)
   tnt start <F>                                     record base commit, create branch, mark active
   tnt lock-tests <F> <file>... [--replace]          freeze test files (before the red gate)
   tnt unlock <F> --reason "<why>"                   reopen tests; resets red and every later gate
@@ -52,6 +54,7 @@ Reporting
   tnt status [<F>] [--json]                         features and gate state
   tnt report <F>                                    write features/<F>/report.md
   tnt view [<F>...] [--out <file>] [--open]         write .tnt/view.html: the ledger as a browsable timeline with code diffs
+  tnt usage [<F>...]                                tokens used per feature and subagent (recorded by the SubagentStop hook)
 
 Reviews of changes built outside tnt (checks: ${REVIEW_CHECKS.join(' > ')})
   tnt review new "<title>" --target <ref> [--base <ref>] [--head-only] [--local-config]
@@ -97,13 +100,19 @@ function gateText(r) {
   const commit = r.commit?.sha ? `\ncommitted ${r.commit.sha.slice(0, 10)}` : r.commit?.error ? `\nWARNING: auto-commit failed: ${r.commit.error}` : '';
   if (r.pass) return head + commit;
   const limit = r.attempts >= r.maxIterations ? `\nattempt ${r.attempts}/${r.maxIterations}: iteration limit reached, escalate to the human` : `\nattempt ${r.attempts}/${r.maxIterations}`;
-  return `${head}\n${r.reasons.map((x) => '  - ' + x).join('\n')}${limit}`;
+  return `${head}\n${r.reasons.map((x) => '  - ' + x).join('\n')}${excerptText(r)}${limit}`;
 }
+
+// The failing lines of each cited run, so a step can start from the failure
+// instead of reading the whole log (the log path is still given).
+const excerptText = (r) => (r.excerpts ?? []).map((x) => `\nfailing output of #${x.seq} (full log: ${x.log}):\n${x.lines.map((l) => '  | ' + l).join('\n')}`).join('');
 
 function reviewGateText(r) {
   const state = !r.decided ? 'NOT DECIDED (evidence missing or invalid)' : r.pass ? 'PASS' : 'FINDINGS';
   const head = `check ${r.gate} for ${r.feature}: ${state} (ledger #${r.seq}, phase=${r.phase})`;
   const lines = [head, ...r.reasons.map((x) => '  - ' + x)];
+  const ex = excerptText(r);
+  if (ex) lines.push(ex.slice(1));
   if (r.verdict) lines.push(`verdict: ${r.verdict}`);
   if (!r.decided) lines.push(`attempt ${r.attempts}/${r.maxIterations}${r.attempts >= r.maxIterations ? ': iteration limit reached, escalate to the human' : ''}`);
   return lines.join('\n');
@@ -144,7 +153,7 @@ function main(argv) {
       out(flags, r, `created ${r.id}: edit ${r.dir}/spec.md`);
       return 0;
     }
-    case 'approve': { const r = h.approve(root, args[0], { by: flags.by }); out(flags, r, gateText); return (r.kind === 'review' ? r.decided : r.pass) ? 0 : 1; }
+    case 'approve': { const r = h.approve(root, args[0], { by: flags.by, profile: flags.profile }); out(flags, r, gateText); return (r.kind === 'review' ? r.decided : r.pass) ? 0 : 1; }
     case 'start': {
       const r = h.start(root, args[0], { headOnly: flags['head-only'] });
       out(flags, r, r.kind === 'review' ? `${r.feature} started${r.alreadyStarted ? ' (already)' : r.recreated ? ' (worktree rebuilt)' : ''}: ${r.mode === 'head' ? 'change ' + r.commit.slice(0, 10) : 'merge result'} in ${r.workdir}, tree ${r.tree.slice(0, 10)}` : `${r.feature} started${r.alreadyStarted ? ' (already)' : ''}; branch=${r.branch ?? '—'} base=${r.base || '(root)'}`);
@@ -246,13 +255,18 @@ function main(argv) {
       out(flags, r, () => (r.ok ? `verify PASS (ledger #${r.seq}; re-runs ${r.reruns.map((s) => '#' + s).join(' ')})` : `verify FAIL (ledger #${r.seq}):\n${r.failures.map((x) => '  - ' + x).join('\n')}`));
       return r.ok ? 0 : 1;
     }
+    case 'usage': {
+      const r = usageReport(root, args);
+      out(flags, r, () => usageText(r));
+      return 0;
+    }
     case 'status': {
       const r = h.status(root, args[0]);
       const checkLine = (g) => { const s = r.gates[g]; return `${g}:${!s ? 'pending' : s.waived ? 'WAIVED' : s.pass === false ? 'FINDINGS' : 'pass'}${s ? '#' + s.seq : ''}`; };
       out(flags, r, () => (args[0] && r.kind === 'review'
         ? `${r.id} ${r.title} (review of ${r.target.ref} at ${r.target.commit.slice(0, 10)}, ${r.mode === 'head' ? 'own commit' : 'merged into ' + r.target.baseRef})\n  worktree: ${r.workdir ?? '—'}\n  phase: ${r.phase}  next check: ${r.nextGate ?? '—'}  started: ${r.started}  verdict: ${r.verdict ?? 'pending'}\n  claims: ${r.acs.join(', ') || '—'}\n  checks: ${r.checks.map(checkLine).join(' ')}\n  attempts: ${JSON.stringify(r.attempts)}`
         : args[0]
-        ? `${r.id} ${r.title}\n  phase: ${r.phase}  next gate: ${r.nextGate ?? '—'}  started: ${r.started}  branch: ${r.branch ?? '—'}\n  ACs: ${r.acs.join(', ') || '—'}\n  locked tests: ${r.lockedTests.join(', ') || '—'}\n  passed: ${Object.entries(r.gates).map(([g, s]) => `${g}#${s.seq}${s.waived ? '(WAIVED)' : ''}`).join(' ') || '—'}\n  attempts: ${JSON.stringify(r.attempts)}`
+        ? `${r.id} ${r.title}\n  phase: ${r.phase}  next gate: ${r.nextGate ?? '—'}  profile: ${r.profile}  started: ${r.started}  branch: ${r.branch ?? '—'}\n  ACs: ${r.acs.join(', ') || '—'}\n  locked tests: ${r.lockedTests.join(', ') || '—'}\n  passed: ${Object.entries(r.gates).map(([g, s]) => `${g}#${s.seq}${s.waived ? '(WAIVED)' : ''}`).join(' ') || '—'}\n  attempts: ${JSON.stringify(r.attempts)}`
         : `${r.project.name} (${r.project.type})  active: ${r.active ?? '—'}\n${r.features.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.waivers ? '  [waivers]' : ''}`).join('\n') || '  no features yet'}${r.reviews.length ? '\nreviews of non-tnt changes (local)\n' + r.reviews.map((x) => `  ${x.id}  ${x.phase.padEnd(10)} ${x.title}${x.verdict ? '  verdict: ' + x.verdict : ''}`).join('\n') : ''}`));
       return 0;
     }
