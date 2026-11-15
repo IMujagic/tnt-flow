@@ -35,8 +35,10 @@ Evidence
   tnt run <F> red|green                             run commands.test, record output
   tnt run <F> style [--name lint]                   run style commands (all in config.style by default)
   tnt run <F> functional --ac AC-1 --expect "<regex>" [--artifact <file>]... -- <command>
+                                                    (the gate also needs the spec's "Expect:" patterns for the AC in the output)
   tnt run <F>|_project probe -- <command>           record any command (not gate-bearing)
   tnt review submit <F> <review.json>               validate and record a code review
+  tnt review external <F>                           run commands.external_review (a second, independent reviewer) and record its review
   tnt audit submit <F> <audit.json>                 validate and record an audit report
   tnt verify <F>                                    re-run tests, style and functional evidence from scratch
   tnt verify --integrated [<F>...] [--out <dir>]    re-prove done features on the current (merged) tree; records nothing, for CI
@@ -173,7 +175,12 @@ function main(argv) {
     case 'waive': { const r = h.waive(root, args[0], args[1], { reason: flags.reason, by: flags.by }); out(flags, r, `${args[1]} WAIVED for ${r.id} by ${flags.by}`); return 0; }
     case 'review':
     case 'audit': {
-      if (args[0] !== 'submit') throw new TntError(`usage: tnt ${cmd} submit <F> <file.json>`);
+      if (cmd === 'review' && args[0] === 'external') {
+        const r = h.externalReview(root, args[1]);
+        out(flags, r, `external review recorded (ledger #${r.seq}, run #${r.run}): verdict=${r.verdict}, saved ${r.file}`);
+        return 0;
+      }
+      if (args[0] !== 'submit') throw new TntError(cmd === 'review' ? 'usage: tnt review submit <F> <file.json> | tnt review external <F>' : 'usage: tnt audit submit <F> <file.json>');
       const r = cmd === 'review' ? h.submitReview(root, args[1], args[2]) : h.submitAudit(root, args[1], args[2]);
       out(flags, r, `${cmd} recorded (ledger #${r.seq}): verdict=${r.verdict}, saved ${r.file}`);
       return 0;

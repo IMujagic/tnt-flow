@@ -22,12 +22,12 @@ plan ──▶ spec (human approves)
 
 | Gate | Passes only when the ledger shows… |
 |---|---|
-| spec | a human approved the exact `spec.md` content (hash recorded); every AC is concrete |
+| spec | a human approved the exact `spec.md` content (hash recorded); every AC is concrete and has an `Expect:` pattern for its functional proof that doesn't also match generic output |
 | red | test files are locked (hashed), every `AC-n` is referenced by a test name (`AC-1`, `test_ac_1_…`, `TestAC1…`, whatever the language allows), and the **configured full suite failed** on the current tree with an AC id in the output |
 | green | the full suite passed after red, the locked tests are byte-identical, and the code differs from the red tree (otherwise the suite is flaky) |
 | style | every configured lint, format-check and typecheck command exited 0 on the green tree |
-| review | an independent review approved the green tree; every finding quotes real code at file:line and every changed file was reviewed |
-| functional | each AC has a black-box run on the green tree whose output matched an `--expect` pattern |
+| review | an independent review approved the green tree; every finding quotes real code at file:line and every changed file was reviewed. With `commands.external_review` set, a second reviewer (another model or vendor) must approve too |
+| functional | each AC has a black-box run on the green tree whose output matched an `--expect` pattern, and some run printed every `Expect:` pattern the spec gives for that AC |
 | audit | `tnt verify` re-executed the tests, style checks and functional runs from scratch, the hash chain is intact, and a fresh auditor's report passed |
 
 Mechanisms behind this:
@@ -111,6 +111,60 @@ that were never committed are eventually pruned by `git gc`, and the page then s
 the diff is no longer available. The page is generated from the ledger and is never
 used as evidence.
 
+## What counts as functional proof
+
+The spec decides, not the functional tester. Each line of a spec's functional
+verification plan ends with the output that proves the AC:
+
+```markdown
+## Functional verification plan
+- AC-1: POST /orders with two items, read the response. Expect: `"total":\s*42\.00`
+- AC-2: POST /orders with an empty cart. Expect: `status=422` Expect: `cart is empty`
+```
+
+`tnt approve` refuses a spec where an AC has no `Expect:`, or where a pattern also
+matches generic output such as `ok`, `success`, `200` or an empty line. Every
+functional run records whether its output matched the spec's patterns for its AC.
+The functional gate, `tnt verify` and `tnt verify --integrated` fail unless some run
+for each AC printed each pattern. The tester's own `--expect` is still required, but
+it can no longer be the only proof. To adopt this gradually in an existing project, set
+`"functional": { "requireSpecExpect": false }`; patterns that specs do give are
+still enforced.
+
+## A second, independent reviewer
+
+The code-reviewer subagent starts fresh, but it is the same model family as the
+implementer and shares its blind spots. To add a reviewer from another model or
+vendor, set `commands.external_review` to a command that writes review JSON. Then
+`/tnt:develop` runs `tnt review external <F>` after the agent review, and the review
+gate needs both reviews to approve.
+
+The command runs from the project root with these variables set:
+
+| Variable | Value |
+|---|---|
+| `TNT_REVIEW_OUT` | where to write the review JSON (outside the repo) |
+| `TNT_BASE` | the commit the feature's diff starts from: `git diff $TNT_BASE -- . ':(exclude).tnt'` |
+| `TNT_SPEC` | absolute path of the feature's `spec.md` |
+| `TNT_FEATURE`, `TNT_FEATURE_DIR` | the feature id and its directory |
+
+It must write the same JSON the code-reviewer agent submits:
+
+```json
+{ "verdict": "approve | changes_requested",
+  "summary": "...",
+  "files_reviewed": ["src/orders.ts", "src/orders.test.ts"],
+  "findings": [ { "id": "X1", "severity": "blocking | major | minor | nit", "file": "src/orders.ts",
+                  "line": 42, "quote": "verbatim code near that line", "issue": "...", "needs_test": false } ] }
+```
+
+The harness records the run and its log, then checks the JSON exactly like an agent's
+review: every finding must quote code that exists within two lines of `file:line`,
+every changed file must be listed in `files_reviewed`, and a review can't approve with
+blocking or major findings. A wrapper script usually sends the diff, the spec and these
+instructions to the other model's CLI or API, and writes its reply to `$TNT_REVIEW_OUT`.
+The command must not change tracked files.
+
 ## Models and usage
 
 Each agent's model is set in its frontmatter (`agents/*.md`), so you only pay for
@@ -168,8 +222,9 @@ The CLI checkout and the log directory are excluded from git so that they don't 
 
 ```json
 {
-  "commands": { "test": "npm test", "lint": "npm run lint", "format_check": "npx prettier --check .", "typecheck": "npx tsc --noEmit", "build": null },
+  "commands": { "test": "npm test", "lint": "npm run lint", "format_check": "npx prettier --check .", "typecheck": "npx tsc --noEmit", "build": null, "external_review": null },
   "style": ["lint", "format_check", "typecheck"],
+  "functional": { "requireSpecExpect": true },
   "git": { "autoCommit": true, "branchPerFeature": true, "branchPrefix": "tnt/" },
   "red": { "requireAcInOutput": true },
   "limits": { "maxIterations": 3 },

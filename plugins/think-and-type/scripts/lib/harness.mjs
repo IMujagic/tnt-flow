@@ -12,7 +12,9 @@ import {
   projectDir, scopeDir, FEATURE_ID, ensureLocalIgnores,
   featuresDir, listFeatures, resolveFeature, loadState, saveState, specPath, evidenceDir,
   activePath, readActive, SPEC_TEMPLATE, slugify, parseAcceptanceCriteria, acRegex, fileSha, relPath,
+  parseSpecExpectations, weakExpectation,
 } from './core.mjs';
+import os from 'node:os';
 
 const SEVERITIES = ['blocking', 'major', 'minor', 'nit'];
 
@@ -56,7 +58,7 @@ export function resolveShell(config) {
 // ---------------------------------------------------------------- recorded execution
 
 export function execRecorded(root, opts) {
-  const { feature, featureDir, step, name, ac, cmd, expect, artifacts = [] } = opts;
+  const { feature, featureDir, step, name, ac, cmd, expect, artifacts = [], env = {} } = opts;
   const config = loadConfig(root);
   if (!cmd || !cmd.trim()) throw new TntError('empty command');
   let expectRe;
@@ -67,8 +69,17 @@ export function execRecorded(root, opts) {
 
   const scope = scopeDir(root, featureDir);
   const seq = nextSeq(scope);
-  const r = runCommand(root, config, { cmd, expectRe, env: { TNT_FEATURE: feature, TNT_STEP: step } });
+  const r = runCommand(root, config, { cmd, expectRe, env: { ...env, TNT_FEATURE: feature, TNT_STEP: step } });
   const { tree, treeAfter, head: h, exit, timedOut, durationMs, expectMatched } = r;
+  // A functional run (or its re-run by `tnt verify`, recorded as step "audit") is
+  // also checked against the approved spec's Expect patterns for its AC, so the
+  // gate can tell whether the spec's outcome was observed.
+  let specExpect;
+  if (ac && featureDir) {
+    let patterns = [];
+    try { patterns = parseSpecExpectations(fs.readFileSync(specPath(featureDir), 'utf8')).get(ac) ?? []; } catch { /* no spec */ }
+    if (patterns.length) specExpect = patterns.map((pattern) => ({ pattern, matched: outputMatches(pattern, r) }));
+  }
 
   const evDir = evidenceDir(root, featureDir);
   fs.mkdirSync(evDir, { recursive: true });
@@ -86,8 +97,12 @@ export function execRecorded(root, opts) {
   return appendLedger(scope, {
     type: 'run', feature, step, name, ac, cmd, exit, timedOut, durationMs, tree, treeAfter,
     mutated: tree !== treeAfter, head: h, log: relPath(root, logAbs), logSha256: sha256(fs.readFileSync(logAbs)),
-    expect, expectMatched, artifacts: savedArtifacts.length ? savedArtifacts : undefined,
+    expect, expectMatched, specExpect, artifacts: savedArtifacts.length ? savedArtifacts : undefined,
   });
+}
+
+function outputMatches(pattern, r) {
+  try { return new RegExp(pattern, 'm').test(r.stdout + '\n' + r.stderr); } catch { return false; }
 }
 
 // Runs one command in the project with the configured shell and reports what
@@ -155,13 +170,26 @@ export function newFeature(root, title, { id: wanted } = {}) {
 
 function specInfo(featureDir) {
   const text = fs.readFileSync(specPath(featureDir), 'utf8');
-  return { text, sha: sha256(text), acs: parseAcceptanceCriteria(text) };
+  return { text, sha: sha256(text), acs: parseAcceptanceCriteria(text), expects: parseSpecExpectations(text) };
 }
 
-function specProblems(spec) {
+function specProblems(spec, config) {
   const p = [];
   if (!spec.acs.length) p.push('spec has no acceptance criteria (lines like "- AC-1: Given ..., when ..., then ...")');
   for (const ac of spec.acs) if (/\.\.\.|<[^>]+>/.test(ac.text)) p.push(`${ac.id} still contains template placeholders`);
+  const ids = new Set(spec.acs.map((a) => a.id));
+  for (const [ac, patterns] of spec.expects) {
+    if (!ids.has(ac)) p.push(`the functional verification plan has an Expect for ${ac}, which is not an acceptance criterion`);
+    for (const pattern of patterns) {
+      const weak = weakExpectation(pattern);
+      if (weak) p.push(`${ac} Expect \`${pattern}\` ${weak}`);
+    }
+  }
+  if (config.functional?.requireSpecExpect !== false) {
+    for (const ac of spec.acs) {
+      if (!spec.expects.has(ac.id)) p.push(`${ac.id} has no expected outcome: add "Expect: \`<regex>\`" to its line in the functional verification plan`);
+    }
+  }
   return p;
 }
 
@@ -169,7 +197,7 @@ export function approve(root, ref, { by }) {
   if (!by) throw new TntError('--by "<human name>" is required: approval records who signed off on the spec');
   const f = resolveFeature(root, ref);
   const spec = specInfo(f.dir);
-  const problems = specProblems(spec);
+  const problems = specProblems(spec, loadConfig(root));
   if (problems.length) throw new TntError(problems.join('; '));
   const e = appendLedger(f.dir, { type: 'approve', feature: f.id, by, specSha: spec.sha, acs: spec.acs.map((a) => a.id) });
   const state = loadState(f.dir);
@@ -282,8 +310,8 @@ function lockedIssues(root, state) {
 
 const EVALUATORS = {
   spec(ctx) {
-    const { state, spec } = ctx;
-    const p = specProblems(spec);
+    const { state, spec, config } = ctx;
+    const p = specProblems(spec, config);
     if (!state.approval) p.push('spec not approved (`tnt approve <F> --by <name>`)');
     else if (state.approval.specSha !== spec.sha) p.push('spec.md changed after approval; re-approve');
     return p;
@@ -327,12 +355,17 @@ const EVALUATORS = {
     return p;
   },
   review(ctx) {
-    const { ledger, tree, f } = ctx;
-    const r = latest(ledger, (e) => e.type === 'review' && e.feature === f.id);
-    if (!r) return ['no review submitted (`tnt review submit`)'];
+    const { ledger, tree, f, config } = ctx;
     const p = [];
-    if (r.tree !== tree) p.push(`review #${r.seq} covers tree ${r.tree.slice(0, 10)}, not the current tree; request a fresh review`);
-    if (r.verdict !== 'approve') p.push(`review #${r.seq} requested changes (${r.counts.blocking} blocking, ${r.counts.major} major); see ${r.file}`);
+    const judge = (r, label, how) => {
+      if (!r) { p.push(`no ${label} recorded (${how})`); return; }
+      if (r.tree !== tree) p.push(`${label} #${r.seq} covers tree ${r.tree.slice(0, 10)}, not the current tree; request a fresh review`);
+      if (r.verdict !== 'approve') p.push(`${label} #${r.seq} requested changes (${r.counts.blocking} blocking, ${r.counts.major} major); see ${r.file}`);
+    };
+    judge(latest(ledger, (e) => e.type === 'review' && e.feature === f.id && !e.source), 'review', '`tnt review submit`');
+    if (config.commands.external_review) {
+      judge(latest(ledger, (e) => e.type === 'review' && e.feature === f.id && e.source === 'external'), 'external review', '`tnt review external`; commands.external_review is configured');
+    }
     return p;
   },
   functional(ctx) {
@@ -346,6 +379,11 @@ const EVALUATORS = {
         if (run.exit !== 0) issues.push(`${ac.id}: functional run #${run.seq} exited ${run.exit}`);
         if (run.expectMatched !== true) issues.push(`${ac.id}: functional run #${run.seq} has no matching --expect; evidence must assert an observable outcome`);
         p.push(...issues);
+      }
+      for (const pattern of spec.expects.get(ac.id) ?? []) {
+        if (!runs.some((run) => run.specExpect?.some((x) => x.pattern === pattern && x.matched))) {
+          p.push(`${ac.id}: no functional run on the current tree printed the spec's expected outcome /${pattern}/; the approved spec defines what proves this AC`);
+        }
       }
     }
     return p;
@@ -462,7 +500,37 @@ export function submitReview(root, ref, file) {
   if (!state.gates.style) throw new TntError(`${f.id}: style gate has not passed; review comes after style`);
   let review;
   try { review = readJson(path.resolve(root, file)); } catch (e) { throw new TntError(`cannot read review JSON: ${e.message}`); }
-  const tree = treeHash(root);
+  return recordReview(root, f, state, review, treeHash(root), {});
+}
+
+// A second, independent review from a command the project configures
+// (commands.external_review), typically a different model or vendor, because a
+// fresh subagent of the same model shares the producer's blind spots. The
+// command gets the diff base, spec and an output path in its environment and
+// writes review JSON there; the harness records the run and then checks the JSON
+// exactly like an agent's review (quotes must exist, every changed file covered).
+export function externalReview(root, ref) {
+  const f = resolveFeature(root, ref);
+  const state = loadState(f.dir);
+  const config = loadConfig(root);
+  if (!config.commands.external_review) throw new TntError('commands.external_review is not configured');
+  if (!state.gates.style) throw new TntError(`${f.id}: style gate has not passed; review comes after style`);
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tnt-review-')), 'review.json');
+  const run = execRecorded(root, {
+    feature: f.id, featureDir: f.dir, step: 'review', name: 'external', cmd: config.commands.external_review,
+    env: { TNT_REVIEW_OUT: out, TNT_BASE: state.syncedBase || state.base || '', TNT_SPEC: path.resolve(specPath(f.dir)), TNT_FEATURE_DIR: path.resolve(f.dir) },
+  });
+  const fail = (why) => { fs.rmSync(path.dirname(out), { recursive: true, force: true }); throw new TntError(`external review (run #${run.seq}, log ${run.log}): ${why}`); };
+  if (run.timedOut) fail('timed out');
+  if (run.exit !== 0) fail(`exited ${run.exit}`);
+  if (run.mutated) fail('modified the working tree; a review must not change the code it reviews');
+  let review;
+  try { review = readJson(out); } catch (e) { fail(`wrote no readable review JSON to $TNT_REVIEW_OUT (${e.message})`); }
+  fs.rmSync(path.dirname(out), { recursive: true, force: true });
+  return recordReview(root, f, state, review, run.tree, { source: 'external', run: run.seq });
+}
+
+function recordReview(root, f, state, review, tree, { source, run }) {
   const errors = [];
   if (!['approve', 'changes_requested'].includes(review.verdict)) errors.push('verdict must be "approve" or "changes_requested"');
   if (!Array.isArray(review.files_reviewed)) errors.push('files_reviewed must be an array of paths');
@@ -489,12 +557,12 @@ export function submitReview(root, ref, file) {
   });
   const counts = Object.fromEntries(SEVERITIES.map((s) => [s, review.findings.filter((x) => x.severity === s).length]));
   if (review.verdict === 'approve' && (counts.blocking || counts.major)) errors.push('cannot approve with blocking or major findings');
-  if (errors.length) throw new TntError(`review rejected:\n  - ${errors.join('\n  - ')}`);
+  if (errors.length) throw new TntError(`${source ? source + ' ' : ''}review rejected:\n  - ${errors.join('\n  - ')}`);
 
   const seq = nextSeq(f.dir);
-  const dest = path.join(f.dir, 'evidence', `${String(seq).padStart(4, '0')}-review.json`);
+  const dest = path.join(f.dir, 'evidence', `${String(seq).padStart(4, '0')}-review${source ? '-' + source : ''}.json`);
   writeJson(dest, review);
-  return appendLedger(f.dir, { type: 'review', feature: f.id, verdict: review.verdict, counts, tree, file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
+  return appendLedger(f.dir, { type: 'review', feature: f.id, source, run, verdict: review.verdict, counts, tree, file: relPath(root, dest), fileSha256: sha256(fs.readFileSync(dest)) });
 }
 
 export function submitAudit(root, ref, file) {
@@ -538,6 +606,7 @@ export function verify(root, ref) {
     const p = check(r);
     if (r.mutated) p.push('modified the working tree');
     if (p.length) failures.push(`re-run ${opts.name ?? opts.ac} (#${r.seq}): ${p.join(', ')}`);
+    return r;
   };
   if (config.commands.test) rerun({ name: 'test', cmd: config.commands.test }, (r) => (r.exit === 0 ? [] : [`exit ${r.exit}`]));
   else failures.push('commands.test not configured');
@@ -545,15 +614,17 @@ export function verify(root, ref) {
 
   const ledger = readLedger(f.dir);
   let acs = [];
-  try { acs = specInfo(f.dir).acs; } catch (e) { failures.push(e.message); }
+  let expects = new Map();
+  try { ({ acs, expects } = specInfo(f.dir)); } catch (e) { failures.push(e.message); }
   const gatedTree = state.gates.green?.tree ?? tree;
   for (const ac of acs) {
     const runs = functionalRuns(ledger, f.id, ac.id, gatedTree).filter((e) => e.exit === 0 && e.expectMatched === true);
     if (!runs.length) { failures.push(`${ac.id}: no passing functional evidence to reproduce`); continue; }
-    for (const run of runs) {
-      rerun({ ac: ac.id, name: 'functional', cmd: run.cmd, expect: run.expect }, (r) => [
-        ...(r.exit === 0 ? [] : [`exit ${r.exit}`]), ...(r.expectMatched ? [] : ['expected output no longer observed']),
-      ]);
+    const again = runs.map((run) => rerun({ ac: ac.id, name: 'functional', cmd: run.cmd, expect: run.expect }, (r) => [
+      ...(r.exit === 0 ? [] : [`exit ${r.exit}`]), ...(r.expectMatched ? [] : ['expected output no longer observed']),
+    ]));
+    for (const pattern of expects.get(ac.id) ?? []) {
+      if (!again.some((r) => r.specExpect?.some((x) => x.pattern === pattern && x.matched))) failures.push(`${ac.id}: re-runs no longer print the spec's expected outcome /${pattern}/`);
     }
   }
   const ok = failures.length === 0;
@@ -594,6 +665,7 @@ export function verifyIntegrated(root, refs = [], { out } = {}) {
       fs.writeFileSync(path.join(out, run.log), logText(cmd, expect, r));
     }
     runs.push(run);
+    return r;
   };
 
   if (config.commands.test) exec('test', config.commands.test);
@@ -605,11 +677,15 @@ export function verifyIntegrated(root, refs = [], { out } = {}) {
     if (!state.gates.green) continue;
     const ledger = readLedger(f.dir);
     let acs = [];
-    try { acs = specInfo(f.dir).acs; } catch (e) { failures.push(`${f.id}: ${e.message}`); }
+    let expects = new Map();
+    try { ({ acs, expects } = specInfo(f.dir)); } catch (e) { failures.push(`${f.id}: ${e.message}`); }
     for (const ac of acs) {
       const passing = functionalRuns(ledger, f.id, ac.id, state.gates.green.tree).filter((e) => e.exit === 0 && e.expectMatched === true);
       if (!passing.length) { failures.push(`${f.id} ${ac.id}: no passing functional evidence to reproduce`); continue; }
-      for (const run of passing) exec(`${f.id} ${ac.id}`, run.cmd, run.expect, { feature: f.id, ac: ac.id, from: run.seq });
+      const again = passing.map((run) => exec(`${f.id} ${ac.id}`, run.cmd, run.expect, { feature: f.id, ac: ac.id, from: run.seq }));
+      for (const pattern of expects.get(ac.id) ?? []) {
+        if (!again.some((r) => outputMatches(pattern, r))) failures.push(`${f.id} ${ac.id}: the spec's expected outcome /${pattern}/ is no longer printed`);
+      }
     }
   }
 
@@ -714,7 +790,7 @@ export function writeReport(root, ref) {
   if (state.unlocks.length) lines.push('', '## Test unlocks', '', ...state.unlocks.map((u) => `- #${u.seq}: ${u.reason}`));
   lines.push('', '## Recorded runs', '', '| Seq | Step | Command | Exit | Tree | Log |', '|---|---|---|---|---|---|', ...ledger.filter((e) => e.type === 'run').map(row));
   const subs = ledger.filter((e) => e.type === 'review' || e.type === 'audit-report');
-  if (subs.length) lines.push('', '## Submissions', '', ...subs.map((e) => `- #${e.seq} ${e.type}: **${e.verdict}** (${toPosix(path.relative(f.dir, path.join(root, e.file)))})`));
+  if (subs.length) lines.push('', '## Submissions', '', ...subs.map((e) => `- #${e.seq} ${e.type}${e.source ? ` (${e.source})` : ''}: **${e.verdict}** (${toPosix(path.relative(f.dir, path.join(root, e.file)))})`));
   const failed = ledger.filter((e) => e.type === 'gate' && !e.pass);
   if (failed.length) lines.push('', '## Failed gate attempts', '', ...failed.map((e) => `- #${e.seq} ${e.gate}: ${e.reasons.join('; ')}`));
   const out = path.join(f.dir, 'report.md');

@@ -31,6 +31,13 @@ Loop on `phase` from `TNT status <F> --json` until it reads `done`:
 | `review` | `tnt:functional-tester` | `TNT gate <F> functional` |
 | `functional` | `tnt:evidence-auditor` | `TNT gate <F> audit` |
 
+**External reviewer.** If `commands.external_review` is set in `.tnt/config.json`,
+then in the `style` phase, after `tnt:code-reviewer` returns, run `TNT review external <F>`
+before `TNT gate <F> review`. It runs the configured second reviewer (usually another
+model or vendor) and records its review, and the review gate needs both reviews to
+approve. If it fails with "external review rejected" (for example a quote that isn't in
+the code), run it once more. If it fails again, show the user the output and stop.
+
 **Always run the gate yourself after the subagent returns**, whatever the subagent
 says. The gate's verdict is the only one that counts. Subagents self-check with
 `TNT check`, which records nothing. Exactly one `TNT gate` call per step comes from
@@ -81,10 +88,10 @@ verifier, and never pick a model to make a gate easier to pass.
 - **green fails**: re-brief `implementer` with the gate output and the green log path. If the implementer returns `blocked` because a locked test contradicts the spec, show the user the quoted test and the AC. With their agreement, either fix the spec (it must be re-approved) or run `TNT unlock <F> --reason "<why>"` and re-run `test-author`.
 - **After any implementer fix** (style, review, functional or audit): run `TNT gate <F> green` before anything else. Code changes invalidate the evidence recorded after green. Passing green again resets the later gates, and the loop resumes at style.
 - **style fails**: send the style-verifier's violation list to `implementer`.
-- **review: changes_requested**: read the newest `evidence/*-review.json`.
+- **review: changes_requested**: read the review file the gate output names (`evidence/*-review.json`, or `*-review-external.json` from the external reviewer). Treat both the same way.
   - Findings with `needs_test: true` mean missing behaviour. Run `TNT unlock <F> --reason "review <ids>: missing coverage"`, then `test-author` with those findings. That gives a new failing test, then implementer, and so on.
   - All other blocking, major and minor findings go to `implementer` with the review file path.
-  - The next review always comes from a **new** reviewer instance.
+  - The next review always comes from a **new** reviewer instance, and the external reviewer runs again too.
 - **functional fails**:
   - *defect*: `TNT unlock` with the reason, then `test-author` writes a failing test that reproduces the defect, then implementer. A defect always gets a regression test first.
   - *environment*: tell the user exactly what is missing and stop.

@@ -86,6 +86,10 @@ work around it. The orchestrator owns routing.
   script.
 - Prefer `--expect` patterns that match a specific observable value, such as
   `"status=201"` or `"total: 42.00"`. A generic pattern like `"ok"` proves little.
+- The approved spec's functional verification plan gives each AC `Expect: \`<regex>\``
+  patterns. The harness checks every functional run's output against them, and the
+  functional gate and `tnt verify` fail unless some run for the AC prints each one.
+  They belong to the human-approved spec: never change them to make a gate pass.
 
 ## 6. Final message format
 

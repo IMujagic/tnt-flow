@@ -129,8 +129,9 @@ export function requireRoot(start) {
 export const DEFAULT_CONFIG = {
   version: 1,
   project: { name: '', type: 'existing' },
-  commands: { test: null, lint: null, format_check: null, typecheck: null, build: null },
+  commands: { test: null, lint: null, format_check: null, typecheck: null, build: null, external_review: null },
   style: [],
+  functional: { requireSpecExpect: true },
   git: { autoCommit: true, branchPerFeature: true, branchPrefix: 'tnt/' },
   red: { requireAcInOutput: true },
   limits: { maxIterations: 3 },
@@ -276,9 +277,10 @@ export const SPEC_TEMPLATE = (id, title) => `# ${id}: ${title}
 ## Out of scope
 
 ## Functional verification plan
-<!-- Per AC: how a tester observes it in the running system (command, request, UI steps)
-     and the exact observable output that proves it. -->
-- AC-1: ...
+<!-- Per AC: how a tester observes it in the running system (command, request, UI steps),
+     then "Expect: \`<regex>\`" for the exact output that proves it, e.g. Expect: \`total: 42\.00\`.
+     The functional gate requires a recorded run whose output matches every Expect. -->
+- AC-1: ... Expect: \`...\`
 
 ## Notes
 `;
@@ -301,6 +303,39 @@ export function parseAcceptanceCriteria(text) {
     }
   }
   return acs;
+}
+
+// Expected outcomes per AC from the "Functional verification plan" section:
+// `- AC-1: <how to observe it>. Expect: \`<regex>\`` (several per AC allowed, also
+// on continuation lines). They are part of the approved spec, so the human signs
+// off on what counts as proof, not the functional tester.
+export function parseSpecExpectations(text) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^#{1,6}\s+functional verification plan\s*$/i.test(l.trim()));
+  const out = new Map();
+  if (start < 0) return out;
+  let ac = null;
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,6}\s/.test(line.trim())) break;
+    const m = line.match(/^\s*[-*]\s+\**(AC-\d+)\**/);
+    if (m) ac = m[1];
+    if (!ac) continue;
+    for (const [, pattern] of line.matchAll(/\bexpect(?:ed)?\s*:\s*`([^`]+)`/gi)) {
+      if (!out.has(ac)) out.set(ac, []);
+      out.get(ac).push(pattern);
+    }
+  }
+  return out;
+}
+
+// Output that any command could print. A spec expectation matching one of these
+// would pass without proving the AC.
+const GENERIC_OUTPUT = ['', 'ok', 'OK', 'true', 'success', 'Success', 'done', 'passed', 'PASS', '200', '0', '1', 'null', 'undefined', 'error'];
+export function weakExpectation(pattern) {
+  let re;
+  try { re = new RegExp(pattern, 'm'); } catch (e) { return `is not a valid regex: ${e.message}`; }
+  const hit = GENERIC_OUTPUT.find((s) => re.test(s));
+  return hit === undefined ? null : `also matches generic output ${JSON.stringify(hit)}; name the specific value that proves the AC`;
 }
 
 // Finds an acceptance-criterion id in any naming style a test framework allows,

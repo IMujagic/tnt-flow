@@ -23,7 +23,7 @@ if it exists, then the code areas the request touches.
   - Include the important negative and edge cases as their own criteria: invalid input, empty state, permissions, limits.
   - No template placeholders (`...` or `<...>`). The approve step rejects them.
 - **Out of scope**: what a reasonable reader might expect but this feature excludes.
-- **Functional verification plan**: one line per AC giving the exact command, request or UI script the functional tester will run, and the output that proves it. It must be self-contained and reproducible.
+- **Functional verification plan**: one line per AC giving the exact command, request or UI script the functional tester will run, and the output that proves it. It must be self-contained and reproducible. End each line with `Expect: \`<regex>\`` for the specific value that proves the AC, for example `- AC-2: POST /orders with an empty cart. Expect: \`status=422\`` or `Expect: \`"total":\s*42\.00\``. The human approves these with the spec, and the functional gate fails unless a recorded run prints every one of them. Approval rejects an AC without one, and a pattern that also matches generic output such as `ok`, `success`, `200` or an empty line. Add several `Expect:` patterns when the AC has several observable parts.
 - **Notes**: affected modules (file paths), risks, and open questions.
 
 If the request is ambiguous in a way that changes behaviour, put the question under

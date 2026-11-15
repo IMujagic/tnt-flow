@@ -62,7 +62,7 @@ Callers need to add two numbers.
 ## Out of scope
 
 ## Functional verification plan
-- AC-1: run add(2, 3) and observe sum=5
+- AC-1: run add(2, 3) and print the sum. Expect: \`sum=5\`
 `;
 
 export const TEST_FILE = `import { test } from 'node:test';
