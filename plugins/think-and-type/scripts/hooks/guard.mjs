@@ -5,7 +5,14 @@
 //  2. Once the red gate passes, locked test files are read-only until the
 //     orchestrator runs `tnt unlock`.
 //  3. Verifier subagents may only write their own draft files.
-// Exit 2 blocks the tool call; stderr is shown to the model.
+//  4. Subagents never run the orchestrator's or the human's tnt commands
+//     (gate, approve, waive, unlock, sync, start, init), never import the
+//     harness directly, and never run git commands that rewrite history,
+//     move branches or discard changes.
+//  5. In the main session, approve, waive, unlock and sync --relock go to a
+//     Claude Code permission prompt, so a person confirms every human decision.
+// Exit 2 blocks the tool call; stderr is shown to the model. A JSON
+// `permissionDecision: "ask"` on stdout (exit 0) makes Claude Code ask the user.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,7 +37,7 @@ const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 // A command "writes" if it has a shell redirect outside quotes (so `=>`, `>=`
 // and "a > b" inside node -e / echo strings don't count), or uses a
 // write-capable command or API anywhere.
-const WRITE_WORDS = /\btee\b|\bcp\b|\bmv\b|\brm\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\bdd\b|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|Clear-Content|New-Item|writeFile|appendFile|createWriteStream|copyFile|rename(Sync)?\(|unlink|open\([^)]*['"][wa]/i;
+const WRITE_WORDS = /\btee\b|\bcp\b|\bmv\b|\brm\b|\binstall\b|\bln\b|\bgit\s+(checkout|restore|stash|reset)\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\bdd\b|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|Clear-Content|New-Item|writeFile|appendFile|createWriteStream|copyFile|rename(Sync)?\(|unlink|open\([^)]*['"][wa]/i;
 function writes(cmd) {
   const unquoted = cmd
     .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, ' ')
@@ -38,8 +45,40 @@ function writes(cmd) {
     .replace(/\d?>\s*(\/dev\/null|\$null|nul)\b/gi, '');
   return />/.test(unquoted) || WRITE_WORDS.test(cmd);
 }
+const unquote = (cmd) => cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, ' ');
+
+// tnt subcommands that decide gates or record human decisions. `TNT check` is
+// the subagents' dry run; everything here belongs to the orchestrator or a person.
+const TNT_CALL = /\btnt(?:\.mjs)?["']?\s+([a-z-]+)([^;&|\n]*)/g;
+const ORCHESTRATOR_ONLY = new Set(['gate', 'approve', 'waive', 'unlock', 'sync', 'start', 'init']);
+const HARNESS_IMPORT = /scripts\/lib\/(harness|core|view)\.mjs/;
+function humanDecision(cmd) {
+  for (const [, sub, rest] of cmd.matchAll(TNT_CALL)) {
+    if (sub === 'approve' || sub === 'waive' || sub === 'unlock') return sub;
+    if (sub === 'sync' && /--relock\b/.test(rest)) return 'sync --relock';
+  }
+  return null;
+}
+
+// git subcommands a step never needs: the harness commits, the orchestrator
+// merges, and nobody else rewrites history or throws away working-tree changes.
+const GIT_CALL = /\bgit(?:\s+(?:-[Cc]\s+\S+|-{1,2}[\w-]+(?:=\S+)?))*\s+([a-z][\w-]*)([^;&|\n]*)/g;
+const GIT_DENIED = new Set(['push', 'commit', 'reset', 'rebase', 'merge', 'cherry-pick', 'revert', 'stash', 'clean',
+  'restore', 'checkout', 'switch', 'am', 'tag', 'update-ref', 'filter-branch', 'filter-repo', 'gc', 'prune',
+  'reflog', 'worktree', 'replace', 'notes', 'pull']);
+function destructiveGit(cmd) {
+  for (const [, sub, rest] of unquote(cmd).matchAll(GIT_CALL)) {
+    if (GIT_DENIED.has(sub)) return `git ${sub}`;
+    if (sub === 'branch' && /\s(-[dDmMcCf]\b|--(delete|force|move|copy)\b)/.test(rest)) return 'git branch' + rest.replace(/\s+$/, '');
+  }
+  return null;
+}
 
 const deny = (msg) => { process.stderr.write(`tnt guard: ${msg}\n`); process.exit(2); };
+const ask = (msg) => {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `tnt guard: ${msg}` } }));
+  process.exit(0);
+};
 const posix = (p) => p.replace(/\\/g, '/');
 
 let input;
@@ -50,6 +89,8 @@ if (!root) process.exit(0);
 
 const tool = input.tool_name;
 const agent = String(input.agent_type || '').replace(/^.*:/, '');
+// Claude Code sets agent_id (and agent_type) on hooks that fire inside a subagent.
+const subagent = Boolean(input.agent_id || input.agent_type);
 const locked = lockedFiles(root);
 
 if (FILE_TOOLS.has(tool)) {
@@ -65,13 +106,24 @@ if (FILE_TOOLS.has(tool)) {
 
 if (SHELL_TOOLS.has(tool)) {
   const cmd = posix(String(input.tool_input?.command || ''));
-  if (!writes(cmd)) process.exit(0);
-  if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
-    deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
+  if (subagent) {
+    for (const [, sub] of cmd.matchAll(TNT_CALL)) {
+      if (ORCHESTRATOR_ONLY.has(sub)) deny(`\`tnt ${sub}\` belongs to the orchestrator or a person, never to a step. Use \`tnt check\` to see what a gate would say, and report anything that needs a decision.`);
+    }
+    if (HARNESS_IMPORT.test(cmd) && /\b(import|require)\b/.test(cmd)) deny('steps use the tnt CLI, not the harness modules directly.');
+    const git = destructiveGit(cmd);
+    if (git) deny(`\`${git}\` is not a step's job: the harness commits, the orchestrator merges, and changes are never discarded or history rewritten. Report what you need instead.`);
   }
-  for (const file of locked) {
-    if (cmd.includes(file)) deny(`command appears to modify locked acceptance test ${file}. Locked tests are read-only until \`tnt unlock\`.`);
+  if (writes(cmd)) {
+    if (/\.tnt\/(ledger\.jsonl|active\.json|view\.html|evidence\/|_project\/(ledger\.jsonl|evidence\/)|features\/[^\s'"]+\/(ledger\.jsonl|state\.json|report\.md|evidence\/))/.test(cmd)) {
+      deny('shell commands must not write harness-owned files under .tnt/. Use the tnt CLI.');
+    }
+    for (const file of locked) {
+      if (cmd.includes(file)) deny(`command appears to modify locked acceptance test ${file}. Locked tests are read-only until \`tnt unlock\`.`);
+    }
   }
+  const decision = humanDecision(cmd);
+  if (decision) ask(`\`tnt ${decision}\` records a human decision in the ledger. Approve only if you made this decision yourself and the --by name is yours.`);
   process.exit(0);
 }
 process.exit(0);

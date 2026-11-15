@@ -76,6 +76,78 @@ test('verifier subagents may only write their own drafts', () => {
   assert.equal(as('tnt:implementer', 'app.mjs'), 0);
 });
 
+const CLI = 'node "/home/u/.claude/plugins/tnt/scripts/tnt.mjs"';
+
+test('subagents cannot run the orchestrator or human tnt commands', () => {
+  const dir = makeProject();
+  driveTo(dir, 'red');
+  const as = (command) => hook(dir, { agent_id: 'a1', agent_type: 'tnt:implementer', tool_name: 'Bash', tool_input: { command } });
+  for (const sub of ['approve F-001 --by Ismar', 'waive F-001 audit --by Ismar --reason x', 'unlock F-001 --reason x',
+    'gate F-001 green', 'sync F-001 --onto main', 'sync F-001 --relock --by Ismar --reason x', 'start F-001', 'init']) {
+    const r = as(`${CLI} ${sub}`);
+    assert.equal(r.code, 2, sub);
+    assert.match(r.stderr, /belongs to the orchestrator or a person/);
+  }
+  assert.equal(as(`${CLI} status F-001 --json && ${CLI} gate F-001 green`).code, 2, 'chained');
+  assert.equal(as(`node -e "import('/p/scripts/lib/harness.mjs').then(h => h.waive())"`).code, 2, 'harness import');
+  for (const sub of ['check F-001 green', 'run F-001 green', 'status F-001 --json', 'lock-tests F-001 a.test.mjs',
+    'review submit F-001 x.json', 'new "Add numbers"', 'ledger verify', 'verify F-001']) {
+    assert.equal(as(`${CLI} ${sub}`).code, 0, sub);
+  }
+  // agent_type alone also marks a subagent (older Claude Code versions)
+  assert.equal(hook(dir, { agent_type: 'tnt:code-reviewer', tool_name: 'Bash', tool_input: { command: `${CLI} approve F-001 --by X` } }).code, 2);
+});
+
+test('human decisions in the main session go to a permission prompt', () => {
+  const dir = makeProject();
+  driveTo(dir, 'red');
+  const main = (command) => hook(dir, { tool_name: 'Bash', tool_input: { command } });
+  for (const sub of ['approve F-001 --by Ismar', 'waive F-001 audit --by Ismar --reason x', 'unlock F-001 --reason x',
+    'sync F-001 --onto main --relock --by Ismar --reason x']) {
+    const r = main(`${CLI} ${sub}`);
+    assert.equal(r.code, 0, sub);
+    const out = JSON.parse(r.stdout).hookSpecificOutput;
+    assert.equal(out.hookEventName, 'PreToolUse');
+    assert.equal(out.permissionDecision, 'ask', sub);
+    assert.match(out.permissionDecisionReason, /human decision/);
+  }
+  for (const sub of ['gate F-001 green', 'sync F-001 --onto main', 'status F-001 --json', 'start F-001']) {
+    const r = main(`${CLI} ${sub}`);
+    assert.equal(r.code, 0, sub);
+    assert.equal(r.stdout, '', sub);
+  }
+});
+
+test('subagents cannot run git commands that rewrite history or discard changes', () => {
+  const dir = makeProject();
+  driveTo(dir, 'red');
+  const as = (command) => hook(dir, { agent_id: 'a1', agent_type: 'tnt:implementer', tool_name: 'Bash', tool_input: { command } });
+  for (const command of ['git push', 'git -C . commit -m "fix"', 'git reset --hard HEAD~1', 'git checkout -- src.mjs',
+    'git stash', 'git clean -fd', 'git restore src.mjs', 'git branch -D tnt/x', 'git --no-pager rebase main',
+    'git status && git merge main', 'git switch main', 'git tag v1']) {
+    const r = as(command);
+    assert.equal(r.code, 2, command);
+    assert.match(r.stderr, /not a step's job/);
+  }
+  for (const command of ['git status --porcelain', `git diff main -- . ':(exclude).tnt'`, 'git log --oneline -5',
+    'git show HEAD:app.mjs', 'git branch --show-current', 'git diff --name-only main', 'grep -n "git push" README.md',
+    'cat .git/HEAD', 'git merge-base --is-ancestor main HEAD']) {
+    assert.equal(as(command).code, 0, command);
+  }
+  // the orchestrator in the main session still merges the base branch
+  assert.equal(hook(dir, { tool_name: 'Bash', tool_input: { command: 'git merge --no-edit main' } }).code, 0);
+});
+
+test('git checkout or restore of a locked test is blocked even in the main session', () => {
+  const dir = makeProject();
+  driveTo(dir, 'red');
+  const main = (command) => hook(dir, { tool_name: 'Bash', tool_input: { command } });
+  assert.equal(main('git checkout HEAD~1 -- app.test.mjs').code, 2);
+  assert.equal(main('git restore app.test.mjs').code, 2);
+  assert.equal(main('install -m 644 /tmp/x app.test.mjs').code, 2);
+  assert.equal(main('git checkout -- app.mjs').code, 0);
+});
+
 test('does nothing outside a think-and-type project', () => {
   const r = sh(process.execPath, [GUARD], path.parse(process.cwd()).root, JSON.stringify({ cwd: path.parse(process.cwd()).root, tool_name: 'Write', tool_input: { file_path: 'x' } }));
   assert.equal(r.code, 0);

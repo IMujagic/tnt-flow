@@ -94,6 +94,14 @@ verifier, and never pick a model to make a gate easier to pass.
 Waivers (`TNT waive`) are only for an explicit user decision. Ask, quote their reason,
 and record `--by` with their name. Never suggest a waiver as the first option.
 
+**Human decisions get a permission prompt.** The plugin's guard hook sends every
+`TNT approve`, `TNT waive`, `TNT unlock` and `TNT sync --relock` to a Claude Code
+permission prompt, so the user confirms each one even in auto mode. Before you run
+one, tell the user in a line what it records and why. If they decline the prompt,
+stop and ask what they want instead. Never retry it a different way. The hook also
+blocks these commands, `TNT gate`, `TNT sync` and history-changing git commands
+inside subagents, so they can only come from you.
+
 ## 3. Escalation
 
 When you stop for the user, show:

@@ -40,8 +40,10 @@ project root. Useful commands:
 **Never run `TNT gate`.** Deciding a gate is the orchestrator's job, and each `gate`
 call is recorded, counts as an attempt, and may commit. Use `TNT check` to see what
 the gate will say. It records nothing. `TNT sync`, `TNT unlock` and `TNT waive` also
-belong to the orchestrator and the human, never to a step. Don't merge or rebase
-branches either.
+belong to the orchestrator and the human, never to a step. Don't commit, merge,
+rebase, reset, stash, check out, restore or push either: the harness commits, and
+the orchestrator merges. A hook blocks all of these inside a step, and blocks
+importing the harness modules directly. If you need one, stop and report it.
 
 Logs land in `.tnt/features/<F>/evidence/`. Read them to diagnose a failure.
 

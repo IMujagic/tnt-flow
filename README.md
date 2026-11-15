@@ -34,7 +34,8 @@ Mechanisms behind this:
 - **Hash-chained ledgers**: every run, gate, approval and submission is chained by sha256, with one chain per feature (`.tnt/features/<F>/ledger.jsonl`) and one for project events (`.tnt/_project/ledger.jsonl`). Editing an entry or a log is detected.
 - **Tree binding**: evidence records a content hash of the working tree, built with a temporary git index. Changing code after green invalidates every later gate.
 - **The CLI chooses commands**: red, green and style always run the configured commands, so a step cannot "prove" its work with `true`.
-- **Guard hook**: blocks direct writes to evidence and state, blocks edits to locked tests after red, and keeps verifier subagents read-only.
+- **Guard hook**: blocks direct writes to evidence and state, blocks edits to locked tests after red, and keeps verifier subagents read-only. Subagents can't run `gate`, `approve`, `waive`, `unlock`, `sync`, `start` or `init`, can't import the harness modules, and can't run git commands that commit, merge, rebase, reset, stash, check out, restore or push.
+- **Human decisions need a person**: `approve`, `waive`, `unlock` and `sync --relock` in the main session go to a Claude Code permission prompt, even in auto mode, so the model can't record a decision in your name without your click. In a non-interactive run (`claude -p`) the prompt can't be answered and the command is refused. Run those commands yourself in a terminal if you need them there.
 - **Git history**: with `git.autoCommit`, the `[tnt:red]` commit (failing tests) lands before `[tnt:green]`.
 
 ## Install
@@ -196,7 +197,10 @@ to start a fresh audit trail (git history keeps the old one).
 
 The harness makes faking evidence hard and easy to detect, but not impossible. An
 agent with shell access could, in principle, rewrite the whole ledger chain. The
-defences are the guard hook, the git history, and `tnt verify` re-execution, which
+guard hook reads commands as text, so a determined agent can hide a write or a
+command from it (for example inside a base64-decoded script). Treat it as defence in
+depth, not a security boundary: locked-test hashes and tree binding still catch the
+result at the next gate. The defences are the guard hook, the git history, and `tnt verify` re-execution, which
 does not trust recorded results. Treat `report.md` together with `tnt verify` as the
 proof, not either one alone.
 

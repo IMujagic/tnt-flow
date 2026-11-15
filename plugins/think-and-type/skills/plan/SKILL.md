@@ -22,6 +22,8 @@ argument-hint: "<what to build>"
    `spec.md` directly if the user dictates the change.
 6. Approval belongs to the user. For each spec they accept, run
    `TNT approve <F> --by "<their name>"`. Never approve without an explicit yes.
+   Claude Code shows a permission prompt for each approval; the user's click there is
+   the confirmation. If they decline it, the spec stays unapproved.
 7. Ask before committing the specs (`docs(F-xxx): spec`). A clean tree is needed before
    `/tnt:develop`.
 
